@@ -1,0 +1,7 @@
+as-set:        AS-RUI
+descr:         AS set for Rui Feng
+members:       AS211575:AS-RUINETWORK
+admin-c:       RF11145-RIPE
+tech-c:        RF11145-RIPE
+changed:       ruifeng@ruinet.work 20260801
+source:        MDNIC
