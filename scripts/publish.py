@@ -199,10 +199,12 @@ def _ref(obj) -> tuple[str, tuple[str, ...]]:
     return obj.object_class, keys
 
 
-def _semantic(obj, *, core: bool) -> tuple[tuple[str, str], ...]:
+def _semantic(obj, *, core: bool, repository: bool = False) -> tuple[tuple[str, str], ...]:
     ignored = set(SERVER_ATTRIBUTES)
     if core:
         ignored.update(PUBLICATION_ATTRIBUTES)
+    if repository:
+        ignored.add("mnt-by")
     values = []
     for entry in obj.entries:
         if entry.name in ignored:
@@ -261,7 +263,9 @@ def build_changes(root: Path, before: str, after: str):
             changes.append(("create", _ref(new), None, new))
         elif new is None:
             changes.append(("delete", _ref(old), old, None))
-        elif _semantic(old, core=False) != _semantic(new, core=False):
+        elif _semantic(old, core=False, repository=True) != _semantic(
+            new, core=False, repository=True
+        ):
             changes.append(("update", _ref(new), old, new))
 
     def order(change):
@@ -273,19 +277,15 @@ def build_changes(root: Path, before: str, after: str):
     return sorted(changes, key=order)
 
 
-def _require_maintainer(obj, maintainer: str) -> None:
-    if obj.values("mnt-by") != (maintainer,):
-        raise PublishError("changed objects must use the configured RADB maintainer")
-
-
 def _desired(obj, email: str, date: str, maintainer: str) -> str:
-    _require_maintainer(obj, maintainer)
-    rendered = transform_for_radb(obj, email, date)
+    rendered = transform_for_radb(obj, email, date, maintainer)
     parsed = parse_text(rendered)
     if _identity(parsed) != _identity(obj):
         raise PublishError("publication transformation changed the object identity")
     if parsed.values("source") != ("RADB",) or parsed.values("changed") != (f"{email} {date}",):
         raise PublishError("publication transformation did not replace source and changed")
+    if parsed.values("mnt-by") != (maintainer,):
+        raise PublishError("publication transformation did not set the maintainer")
     if parsed.values("descr").count(RADB_REVIEWED_DESCRIPTION) != 1:
         raise PublishError("publication transformation did not add the reviewed description")
     return rendered
@@ -311,11 +311,11 @@ def _delete_body(remote, email: str, reason: str) -> str:
 def publish_changes(changes, client, *, maintainer: str, email: str, date: str, reason: str):
     outcomes = []
     for action, ref, old, new in changes:
-        if old is not None:
-            _require_maintainer(old, maintainer)
         remote = _remote(client, ref)
         desired = _desired(new, email, date, maintainer) if new is not None else None
         desired_obj = parse_text(desired) if desired is not None else None
+        expected_old = _desired(old, email, date, maintainer) if old is not None else None
+        expected_old_obj = parse_text(expected_old) if expected_old is not None else None
 
         if action == "create":
             if remote is not None:
@@ -331,7 +331,7 @@ def publish_changes(changes, client, *, maintainer: str, email: str, date: str, 
             if _semantic(remote, core=False) == _semantic(desired_obj, core=False):
                 outcomes.append((ref, "already-current"))
                 continue
-            if _semantic(remote, core=True) != _semantic(old, core=True):
+            if _semantic(remote, core=True) != _semantic(expected_old_obj, core=True):
                 raise PublishError("RADB content drifted from Git; refusing overwrite")
             client.update(ref, desired)
             outcome = "updated"
@@ -339,7 +339,7 @@ def publish_changes(changes, client, *, maintainer: str, email: str, date: str, 
             if remote is None:
                 outcomes.append((ref, "already-absent"))
                 continue
-            if _semantic(remote, core=True) != _semantic(old, core=True):
+            if _semantic(remote, core=True) != _semantic(expected_old_obj, core=True):
                 raise PublishError("RADB content drifted from Git; refusing deletion")
             client.delete(ref, _delete_body(remote, email, reason))
             if client.fetch(ref) is not None:

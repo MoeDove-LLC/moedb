@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import ipaddress
-import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
@@ -15,6 +14,7 @@ OBJECT_CLASSES = frozenset({"as-set", "person", "role", "route", "route6"})
 CONTACT_CLASSES = frozenset({"person", "role"})
 RIR_SOURCES = frozenset({"AFRINIC", "APNIC", "ARIN", "LACNIC", "RIPE"})
 RADB_REVIEWED_DESCRIPTION = "Customer Object - Reviewed"
+PUBLICATION_CONTROLLED_ATTRIBUTES = frozenset({"mnt-by"})
 DANGEROUS_ATTRIBUTES = frozenset(
     {
         "api-key",
@@ -39,11 +39,11 @@ _MAINTAINER_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{1,79}$")
 _AS_SET_RE = re.compile(r"^(?:AS[1-9][0-9]{0,9}:)*AS-[A-Z0-9][A-Z0-9_-]*$")
 
 _REQUIRED = {
-    "as-set": {"as-set", "admin-c", "tech-c", "mnt-by", "changed", "source"},
-    "person": {"person", "address", "phone", "e-mail", "nic-hdl", "mnt-by", "changed", "source"},
-    "role": {"role", "address", "phone", "e-mail", "nic-hdl", "mnt-by", "changed", "source"},
-    "route": {"route", "origin", "admin-c", "tech-c", "mnt-by", "changed", "source"},
-    "route6": {"route6", "origin", "admin-c", "tech-c", "mnt-by", "changed", "source"},
+    "as-set": {"as-set", "admin-c", "tech-c", "changed", "source"},
+    "person": {"person", "address", "phone", "e-mail", "nic-hdl", "changed", "source"},
+    "role": {"role", "address", "phone", "e-mail", "nic-hdl", "changed", "source"},
+    "route": {"route", "origin", "admin-c", "tech-c", "changed", "source"},
+    "route6": {"route6", "origin", "admin-c", "tech-c", "changed", "source"},
 }
 _SINGLE = frozenset(
     {
@@ -56,7 +56,6 @@ _SINGLE = frozenset(
         "nic-hdl",
         "admin-c",
         "tech-c",
-        "mnt-by",
         "changed",
         "source",
     }
@@ -209,7 +208,6 @@ def _valid_email(value: str) -> bool:
 def validate_object(
     obj: RPSLObject,
     expected_path: str | Path | None = None,
-    maintainer: str | None = None,
 ) -> list[str]:
     """Return basic schema and repository-policy errors for one object."""
 
@@ -226,6 +224,10 @@ def validate_object(
             errors.append(f"{label}: '{entry.name}' must not be empty")
         if entry.name in DANGEROUS_ATTRIBUTES:
             errors.append(f"{label}: dangerous attribute '{entry.name}' is forbidden")
+        if entry.name in PUBLICATION_CONTROLLED_ATTRIBUTES:
+            errors.append(
+                f"{label}: publication-controlled attribute '{entry.name}' must be omitted"
+            )
     for name in sorted(_REQUIRED[object_class]):
         if not counts.get(name):
             errors.append(f"{label}: missing required attribute '{name}'")
@@ -284,13 +286,6 @@ def validate_object(
             if date > datetime.now(timezone.utc).date():
                 errors.append(f"{label}: changed date must not be in the future")
 
-    mnt_by = obj.first("mnt-by") or ""
-    maintainers = [part.strip() for part in mnt_by.split(",")]
-    if not maintainers or any(not _MAINTAINER_RE.fullmatch(part) for part in maintainers):
-        errors.append(f"{label}: mnt-by contains an invalid maintainer")
-    if maintainer is not None and mnt_by != maintainer:
-        errors.append(f"{label}: mnt-by must be exactly '{maintainer}'")
-
     if expected_path is not None:
         actual = PurePosixPath(str(expected_path).replace("\\", "/")).as_posix()
         if actual.startswith("./"):
@@ -303,7 +298,7 @@ def validate_object(
     return errors
 
 
-def validate_repository(root: str | Path = ".", maintainer: str | None = None) -> list[str]:
+def validate_repository(root: str | Path = ".") -> list[str]:
     root_path = Path(root)
     data = root_path / "data"
     errors: list[str] = []
@@ -337,7 +332,7 @@ def validate_repository(root: str | Path = ".", maintainer: str | None = None) -
             errors.append(str(error))
             continue
         objects.append(obj)
-        errors.extend(validate_object(obj, relative, maintainer))
+        errors.extend(validate_object(obj, relative))
         identity = (obj.object_class, *obj.primary_key)
         if identity in identities:
             errors.append(f"{relative}: duplicate object identity already in '{identities[identity]}'")
@@ -459,14 +454,18 @@ def git_first_contact_commit(root: str | Path, revision: str, handle: str) -> st
     return commits[0] if commits else None
 
 
-def transform_for_radb(obj: RPSLObject, email: str, date: str) -> str:
-    """Replace contributor-controlled changed/source fields without touching Git."""
+def transform_for_radb(
+    obj: RPSLObject, email: str, date: str, maintainer: str
+) -> str:
+    """Add publication-controlled fields without touching Git."""
 
     forbidden = sorted({entry.name for entry in obj.entries} & DANGEROUS_ATTRIBUTES)
     if forbidden:
         raise RPSLError(f"cannot publish forbidden attribute '{forbidden[0]}'")
     if not _valid_email(email):
         raise RPSLError("RADB publication contact must be a valid email address")
+    if not _MAINTAINER_RE.fullmatch(maintainer):
+        raise RPSLError("RADB maintainer must be a canonical maintainer name")
     try:
         parsed_date = datetime.strptime(date, "%Y%m%d").date()
     except ValueError:
@@ -476,7 +475,7 @@ def transform_for_radb(obj: RPSLObject, email: str, date: str) -> str:
     lines = [
         line
         for entry in obj.entries
-        if entry.name not in {"changed", "source"}
+        if entry.name not in {"changed", "source", "mnt-by"}
         and not (
             entry.name == "descr"
             and " ".join(entry.value.split()) == RADB_REVIEWED_DESCRIPTION
@@ -485,14 +484,10 @@ def transform_for_radb(obj: RPSLObject, email: str, date: str) -> str:
     ]
     lines.extend(
         (
+            f"{'mnt-by:':<16}{maintainer}",
             f"{'descr:':<16}{RADB_REVIEWED_DESCRIPTION}",
             f"changed:       {email} {date}",
             "source:        RADB",
         )
     )
     return "\n".join(lines) + "\n"
-
-
-def configured_maintainer() -> str | None:
-    value = os.environ.get("RADB_MAINTAINER")
-    return value if value else None

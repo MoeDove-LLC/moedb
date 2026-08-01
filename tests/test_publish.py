@@ -29,7 +29,6 @@ address:        Example address
 phone:          +1-555-0100
 e-mail:         noc@example.net
 nic-hdl:        NOC-AP
-mnt-by:         MAINT-MOEDB
 changed:        contributor@example.net 20240101
 source:         APNIC
 """
@@ -40,7 +39,6 @@ descr:          old description
 origin:         AS64496
 admin-c:        NOC-AP
 tech-c:         NOC-AP
-mnt-by:         MAINT-MOEDB
 changed:        contributor@example.net 20240101
 source:         MDNIC
 """
@@ -49,7 +47,11 @@ NEW_ROUTE = OLD_ROUTE.replace("old description", "new description")
 
 
 def transformed(text: str, date: str = DATE) -> str:
-    return transform_for_radb(parse_text(text), EMAIL, date)
+    return transform_for_radb(parse_text(text), EMAIL, date, MAINTAINER)
+
+
+def with_maintainer(text: str, maintainer: str) -> str:
+    return text.replace("changed:", f"mnt-by:         {maintainer}\nchanged:")
 
 
 class FakeClient:
@@ -104,6 +106,7 @@ class PublicationTests(unittest.TestCase):
         obj = parse_text(sent)
         self.assertEqual(obj.values("source"), ("RADB",))
         self.assertEqual(obj.values("changed"), (f"{EMAIL} {DATE}",))
+        self.assertEqual(obj.values("mnt-by"), (MAINTAINER,))
         self.assertEqual(obj.values("descr"), (RADB_REVIEWED_DESCRIPTION,))
         self.assertNotIn("contributor@example.net", sent)
         self.assertGreaterEqual([call[0] for call in client.calls].count("fetch"), 2)
@@ -130,6 +133,16 @@ class PublicationTests(unittest.TestCase):
             parse_text(sent).values("descr").count(RADB_REVIEWED_DESCRIPTION), 1
         )
 
+    def test_update_accepts_legacy_git_maintainer(self):
+        legacy = with_maintainer(OLD_ROUTE, "LEGACY-MNT")
+        item = change("update", legacy, NEW_ROUTE)
+        client = FakeClient({item[1]: transformed(legacy, "20231231")})
+
+        self.assertEqual(self.publish([item], client)[0][1], "updated")
+        sent = next(call[2] for call in client.calls if call[0] == "update")
+        self.assertEqual(parse_text(sent).values("mnt-by"), (MAINTAINER,))
+        self.assertNotIn("LEGACY-MNT", sent)
+
     def test_update_and_delete_refuse_remote_core_drift(self):
         drifted = transformed(OLD_ROUTE.replace("old description", "outside edit"))
         for action, new in (("update", NEW_ROUTE), ("delete", None)):
@@ -139,6 +152,18 @@ class PublicationTests(unittest.TestCase):
                 with self.assertRaisesRegex(publish.PublishError, "drifted"):
                     self.publish([item], client)
                 self.assertFalse(any(call[0] in {"update", "delete"} for call in client.calls))
+
+    def test_update_and_delete_refuse_remote_maintainer_drift(self):
+        drifted = transformed(OLD_ROUTE).replace(MAINTAINER, "HIJACK-MNT")
+        for action, new in (("update", NEW_ROUTE), ("delete", None)):
+            with self.subTest(action=action):
+                item = change(action, OLD_ROUTE, new)
+                client = FakeClient({item[1]: drifted})
+                with self.assertRaisesRegex(publish.PublishError, "drifted"):
+                    self.publish([item], client)
+                self.assertFalse(
+                    any(call[0] in {"update", "delete"} for call in client.calls)
+                )
 
     def test_delete_preserves_remote_object_and_appends_delete(self):
         item = change("delete", OLD_ROUTE, None)
@@ -151,6 +176,7 @@ class PublicationTests(unittest.TestCase):
         deletion = parse_text(body)
         self.assertEqual(deletion.values("changed"), (f"{EMAIL} 20231231",))
         self.assertEqual(deletion.values("source"), ("RADB",))
+        self.assertEqual(deletion.values("mnt-by"), (MAINTAINER,))
         self.assertEqual(deletion.values("delete"), (f"{EMAIL} {REASON}",))
         self.assertEqual(
             deletion.values("descr").count(RADB_REVIEWED_DESCRIPTION), 1
@@ -158,6 +184,19 @@ class PublicationTests(unittest.TestCase):
         self.assertIn(f"delete:         {EMAIL} {REASON}", body)
         self.assertEqual(body.count("source:"), 1)
         self.assertTrue(body.rstrip().endswith(f"delete:         {EMAIL} {REASON}"))
+
+    def test_delete_accepts_legacy_git_maintainer_and_preserves_remote(self):
+        legacy = with_maintainer(OLD_ROUTE, "LEGACY-MNT")
+        item = change("delete", legacy, None)
+        remote = transformed(legacy, "20231231")
+        client = FakeClient({item[1]: remote})
+
+        self.assertEqual(self.publish([item], client)[0][1], "deleted")
+        body = next(call[2] for call in client.calls if call[0] == "delete")
+        self.assertTrue(body.startswith(remote.rstrip() + "\n"))
+        deletion = parse_text(body)
+        self.assertEqual(deletion.values("mnt-by"), (MAINTAINER,))
+        self.assertNotIn("LEGACY-MNT", body)
 
     def test_missing_delete_is_idempotent(self):
         item = change("delete", OLD_ROUTE, None)
@@ -177,10 +216,14 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(publish.PublishError, "post-write"):
             self.publish([item], client)
 
-    def test_configured_maintainer_is_enforced(self):
-        item = change("create", None, ROLE.replace(MAINTAINER, "OTHER-MNT"))
-        with self.assertRaisesRegex(publish.PublishError, "maintainer"):
-            self.publish([item], FakeClient())
+    def test_legacy_maintainer_is_replaced_by_configured_maintainer(self):
+        item = change("create", None, with_maintainer(ROLE, "LEGACY-MNT"))
+        client = FakeClient()
+
+        self.assertEqual(self.publish([item], client)[0][1], "created")
+        sent = next(call[2] for call in client.calls if call[0] == "create")
+        self.assertEqual(parse_text(sent).values("mnt-by"), (MAINTAINER,))
+        self.assertNotIn("LEGACY-MNT", sent)
 
 
 class FakeResponse:
@@ -286,6 +329,26 @@ class GitChangeTests(unittest.TestCase):
             self.assertEqual(len(changes), 1)
             self.assertEqual(changes[0][:2], ("update", ("route", ("192.0.2.0/24", "AS64496"))))
             self.assertEqual(publish._exact_range(root, before, after), (before, after))
+
+    def test_removing_only_a_legacy_maintainer_is_not_a_publication_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.git(root, "init", "-q")
+            self.git(root, "config", "user.name", "Test")
+            self.git(root, "config", "user.email", "test@example.net")
+            path = root / "data" / "route" / "example"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                with_maintainer(OLD_ROUTE, "LEGACY-MNT"), encoding="utf-8"
+            )
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "legacy")
+            before = self.git(root, "rev-parse", "HEAD")
+            path.write_text(OLD_ROUTE, encoding="utf-8")
+            self.git(root, "commit", "-qam", "remove repository maintainer")
+            after = self.git(root, "rev-parse", "HEAD")
+
+            self.assertEqual(publish.build_changes(root, before, after), [])
 
     def test_disabled_mode_plans_without_reading_secrets_or_network(self):
         item = change("create", None, ROLE)

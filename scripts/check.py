@@ -19,7 +19,6 @@ try:
         CONTACT_CLASSES,
         RPSLError,
         RPSLObject,
-        configured_maintainer,
         git_changed_paths,
         git_file_text,
         git_first_contact_commit,
@@ -33,7 +32,6 @@ except ImportError:  # Direct execution: python scripts/check.py
         CONTACT_CLASSES,
         RPSLError,
         RPSLObject,
-        configured_maintainer,
         git_changed_paths,
         git_file_text,
         git_first_contact_commit,
@@ -237,7 +235,6 @@ def check_pr(
     *,
     verify_rir: bool = True,
     opener=None,
-    maintainer: str | None = None,
     pr_author_id: int | None = None,
     repository: str | None = None,
     repository_id: int | None = None,
@@ -249,8 +246,7 @@ def check_pr(
     """Validate repository state, submission rules, and automatic PR ownership."""
 
     root_path = Path(root)
-    selected_maintainer = maintainer if maintainer is not None else configured_maintainer()
-    errors = validate_repository(root_path, selected_maintainer)
+    errors = validate_repository(root_path)
     try:
         changed_paths = git_changed_paths(root_path, before, after)
     except RPSLError as error:
@@ -295,7 +291,7 @@ def check_pr(
             if old_obj is None:
                 errors.append(f"{path}: changed data path contains no RPSL object")
             continue
-        object_errors = validate_object(new_obj, path, selected_maintainer)
+        object_errors = validate_object(new_obj, path)
         errors.extend(object_errors)
         if old_text == new_text:
             continue
@@ -374,7 +370,7 @@ def check_pr(
             errors.append(str(error))
         if final_contact is not None:
             contact_path, contact = final_contact
-            if not validate_object(contact, contact_path, selected_maintainer):
+            if not validate_object(contact, contact_path):
                 rir_error = verify_contact_at_rir(contact, opener)
                 if rir_error:
                     errors.append(f"{contact_path}: {rir_error}")
@@ -469,7 +465,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.base:
         errors = check_pr(args.root, args.base, args.head)
     else:
-        errors = validate_repository(args.root, configured_maintainer())
+        errors = validate_repository(args.root)
     if errors:
         for error in errors:
             print(f"ERROR: {error}")

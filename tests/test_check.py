@@ -38,7 +38,6 @@ address:       Public business address
 phone:         +1 555 0100
 e-mail:        jane@example.net
 nic-hdl:       {handle}
-mnt-by:        MAINT-MOEDB
 changed:       jane@example.net {date}
 source:        {source}
 {extra}"""
@@ -50,7 +49,6 @@ address:       Public business address
 phone:         +1 555 0101
 e-mail:        noc@example.net
 nic-hdl:       {handle}
-mnt-by:        MAINT-MOEDB
 changed:       noc@example.net {date}
 source:        {source}
 """
@@ -61,7 +59,6 @@ def route(handle="JD1-RIPE", date="20200102", source="MDNIC"):
 origin:        AS64496
 admin-c:       {handle}
 tech-c:        {handle}
-mnt-by:        MAINT-MOEDB
 changed:       jane@example.net {date}
 source:        {source}
 """
@@ -72,7 +69,6 @@ def route6(handle="JD1-RIPE", date="20200102"):
 origin:        AS64496
 admin-c:       {handle}
 tech-c:        {handle}
-mnt-by:        MAINT-MOEDB
 changed:       jane@example.net {date}
 source:        MDNIC
 """
@@ -83,7 +79,6 @@ def as_set(handle="JD1-RIPE", date="20200102"):
 members:       AS64497
 admin-c:       {handle}
 tech-c:        {handle}
-mnt-by:        MAINT-MOEDB
 changed:       jane@example.net {date}
 source:        MDNIC
 """
@@ -131,7 +126,9 @@ class RPSLValidationTests(unittest.TestCase):
                     )
                 )
                 with self.assertRaisesRegex(RPSLError, "cannot publish forbidden attribute"):
-                    transform_for_radb(obj, "publish@example.net", "20200103")
+                    transform_for_radb(
+                        obj, "publish@example.net", "20200103", "MAINT-MOEDB"
+                    )
 
     def test_source_rules(self):
         self.assertFalse(validate_object(parse_text(person(source="APNIC"))))
@@ -149,20 +146,34 @@ class RPSLValidationTests(unittest.TestCase):
         future = validate_object(parse_text(person(date=tomorrow)))
         self.assertTrue(any("future" in error for error in future))
 
-    def test_canonical_path_and_maintainer(self):
+    def test_canonical_path_and_rejects_repository_maintainer(self):
         obj = parse_text(route())
         good = "data/route/192.0.2.0_24__AS64496"
-        self.assertFalse(validate_object(obj, good, "MAINT-MOEDB"))
-        errors = validate_object(obj, good + ".rpsl", "OTHER-MNT")
+        self.assertFalse(validate_object(obj, good))
+        errors = validate_object(obj, good + ".rpsl")
         self.assertTrue(any("object must be stored" in error for error in errors))
         self.assertTrue(any("must not use the .rpsl" in error for error in errors))
-        self.assertTrue(any("mnt-by must be exactly" in error for error in errors))
+
+        with_maintainer = route().replace(
+            "changed:", "mnt-by:        CONTRIBUTOR-MNT\nchanged:"
+        )
+        errors = validate_object(parse_text(with_maintainer), good)
+        self.assertTrue(any("mnt-by" in error for error in errors))
+
+    def test_templates_do_not_ask_contributors_for_a_maintainer(self):
+        template_root = Path(__file__).resolve().parents[1] / "templates"
+        for path in sorted(template_root.iterdir()):
+            with self.subTest(template=path.name):
+                self.assertNotIn("mnt-by:", path.read_text(encoding="utf-8"))
 
     def test_transform_adds_review_marker_and_replaces_publication_fields(self):
         for factory in (person, role, route, route6, as_set):
             with self.subTest(object_class=factory.__name__):
                 transformed = transform_for_radb(
-                    parse_text(factory()), "publish@example.net", "20200103"
+                    parse_text(factory()),
+                    "publish@example.net",
+                    "20200103",
+                    "MAINT-MOEDB",
                 )
                 published = parse_text(transformed)
                 self.assertEqual(transformed.count("changed:"), 1)
@@ -172,15 +183,34 @@ class RPSLValidationTests(unittest.TestCase):
                 )
                 self.assertIn("changed:       publish@example.net 20200103", transformed)
                 self.assertIn("source:        RADB", transformed)
-                self.assertIn("mnt-by:        MAINT-MOEDB", transformed)
+                self.assertEqual(published.values("mnt-by"), ("MAINT-MOEDB",))
 
         already_marked = route().replace(
             "origin:", f"descr:         {RADB_REVIEWED_DESCRIPTION}\norigin:"
         )
         published = parse_text(
-            transform_for_radb(parse_text(already_marked), "publish@example.net", "20200103")
+            transform_for_radb(
+                parse_text(already_marked),
+                "publish@example.net",
+                "20200103",
+                "MAINT-MOEDB",
+            )
         )
         self.assertEqual(published.values("descr").count(RADB_REVIEWED_DESCRIPTION), 1)
+
+        legacy = route().replace(
+            "changed:", "mnt-by:        LEGACY-MNT\nchanged:"
+        )
+        published = parse_text(
+            transform_for_radb(
+                parse_text(legacy),
+                "publish@example.net",
+                "20200103",
+                "MAINT-MOEDB",
+            )
+        )
+        self.assertEqual(published.values("mnt-by"), ("MAINT-MOEDB",))
+        self.assertNotIn("LEGACY-MNT", published.render())
 
 
 class RepositoryValidationTests(unittest.TestCase):
@@ -201,7 +231,7 @@ class RepositoryValidationTests(unittest.TestCase):
     def test_valid_repository_and_local_reference(self):
         self.write("data/person/JD1-RIPE", person())
         self.write("data/route/192.0.2.0_24__AS64496", route())
-        self.assertEqual(validate_repository(self.root, "MAINT-MOEDB"), [])
+        self.assertEqual(validate_repository(self.root), [])
 
     def test_admin_and_tech_must_be_the_same_local_contact(self):
         self.write("data/person/JD1-RIPE", person())

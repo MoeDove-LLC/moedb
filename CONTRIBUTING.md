@@ -14,7 +14,7 @@
 | `route` | `data/route/192.0.2.0_24__AS64496` | `MDNIC` |
 | `route6` | `data/route6/2001~db8~~_32__AS64496` | `MDNIC` |
 
-对象文件没有 `.rpsl` 后缀。属性名、ASN、NIC handle 和 source 使用规范大小写，`mnt-by` 使用仓库管理员指定的 maintainer。
+对象文件没有 `.rpsl` 后缀。属性名、ASN、NIC handle 和 source 使用规范大小写。不要填写 `mnt-by`；发布任务会使用管理员配置的 maintainer 自动注入。
 
 文件名从对象主键生成：AS-SET 中的 `:` 写成 `~`；route 中的 `/` 写成 `_`，IPv6 的 `:` 写成 `~`，最后追加 `__<origin>`。
 
@@ -63,8 +63,8 @@ changed:       contributor@example.net YYYYMMDD
 
 数据投稿只修改 `data/`，不要同时修改工作流、校验脚本、模板或文档。请在 PR 模板中提供 ASN/前缀关系说明；联系人和 RIR 查询由 CI 从对象中自动确定。
 
-不要提交 `owner:`、`password:`、`auth:`、`override:`、`api-key:`、`delete:`、服务端生成字段或任何秘密；owner 完全由 CI 确定。`person` 和 `role` 会公开，请只填写获准公开的联系资料。
+不要提交 `owner:`、`mnt-by:`、`password:`、`auth:`、`override:`、`api-key:`、`delete:`、服务端生成字段或任何秘密；owner 完全由 CI 确定，`mnt-by` 完全由发布任务确定。`person` 和 `role` 会公开，请只填写获准公开的联系资料。
 
 PR 检查会验证仓库格式、单一授权联系人、GitHub owner、引用关系、source、changed 日期及 RIR handle。管理员仍会人工核对资源关系后决定是否合并。
 
-合并后，发布任务只在内存中将新增/更新对象的 source 改为 `RADB`，并将 changed 改为管理员配置的发布邮箱和合并 commit 的 UTC 日期。删除按 RADB 要求保留远端对象原文并追加 `delete`。Git 中保留投稿时的原值。
+合并后，发布任务只在内存中为新增/更新对象注入管理员配置的 `mnt-by`，将 source 改为 `RADB`，并将 changed 改为管理员配置的发布邮箱和合并 commit 的 UTC 日期。删除按 RADB 要求保留远端对象原文并追加 `delete`。Git 中保留投稿时的原值。

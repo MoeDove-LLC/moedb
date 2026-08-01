@@ -37,7 +37,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
           BEFORE_SHA: ${{ github.event.before }}
           AFTER_SHA: ${{ github.sha }}
-          RADB_MAINTAINER: ${{ vars.RADB_MAINTAINER }}
+          RADB_MAINTAINER: ${{ secrets.RADB_MAINTAINER }}
           RADB_DELETE_REASON: ${{ secrets.RADB_DELETE_REASON }}
           RADB_PUBLISH_ENABLED: ${{ secrets.RADB_PUBLISH_ENABLED }}
           RADB_USERNAME: ${{ secrets.RADB_USERNAME }}

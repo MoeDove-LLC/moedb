@@ -3,6 +3,5 @@ descr:         Example submitted route
 origin:        AS64496
 admin-c:       YOUR-HANDLE-RIR
 tech-c:        YOUR-HANDLE-RIR
-mnt-by:        YOUR-MNT
 changed:       contributor@example.net YYYYMMDD
 source:        MDNIC
