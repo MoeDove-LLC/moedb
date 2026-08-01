@@ -1,0 +1,7 @@
+as-set:        AS-FR
+descr:         FRNIC
+members:       AS211575:AS-RUINETWORK
+admin-c:       ZY1410-AP
+tech-c:        ZY1410-AP
+changed:       i@lookatthesky.cn 20260801
+source:        MDNIC
