@@ -86,6 +86,15 @@ def change(action: str, old: str | None, new: str | None):
 
 
 class PublicationTests(unittest.TestCase):
+    def test_publish_workflow_is_disabled_in_forks(self):
+        workflow = (
+            Path(__file__).parents[1] / ".github/workflows/publish.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "if: github.repository == 'MoeDove-LLC/moedb'",
+            workflow,
+        )
+
     def publish(self, changes, client):
         return publish.publish_changes(
             changes,
