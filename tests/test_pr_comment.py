@@ -212,6 +212,34 @@ class PrCommentTests(unittest.TestCase):
         self.assertTrue(any("data/person/ZY_1410-AP" in item for item in suggestions))
         self.assertTrue(any("删除投稿中的 `mnt-by`" in item for item in suggestions))
 
+    def test_suggestions_cover_misplaced_filtered_role(self):
+        suggestions = user_suggestions(
+            "\n".join(
+                [
+                    "ERROR: role/ML24477-RIPE: object must be stored at "
+                    "'data/role/ML24477-RIPE'",
+                    "ERROR: role/ML24477-RIPE: publication-controlled attribute "
+                    "'mnt-by' must be omitted",
+                    "ERROR: role/ML24477-RIPE: dangerous attribute 'created' is forbidden",
+                    "ERROR: role/ML24477-RIPE: dangerous attribute "
+                    "'last-modified' is forbidden",
+                    "ERROR: role/ML24477-RIPE: missing required attribute 'changed'",
+                    "ERROR: role/ML24477-RIPE: missing required attribute 'e-mail'",
+                    "ERROR: role/ML24477-RIPE: missing required attribute 'phone'",
+                    "ERROR: role/ML24477-RIPE: contact source must be AFRINIC, APNIC, "
+                    "ARIN, LACNIC, or RIPE",
+                ]
+            )
+        )
+
+        self.assertIn(
+            "重命名文件：`git mv -- role/ML24477-RIPE data/role/ML24477-RIPE`。",
+            suggestions,
+        )
+        self.assertIn("补齐必填属性：`changed`、`e-mail`、`phone`。", suggestions)
+        self.assertIn("删除禁止投稿的属性：`created`、`last-modified`。", suggestions)
+        self.assertTrue(any("不要附加 `# Filtered`" in item for item in suggestions))
+
     def test_capture_reads_only_the_bounded_report_prefix(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

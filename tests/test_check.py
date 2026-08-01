@@ -413,6 +413,45 @@ class PullRequestTests(GitRepositoryCase):
         errors = self.check(self.base, head)
         self.assertTrue(any("separate pull requests" in error for error in errors))
 
+    def test_misplaced_role_is_rejected_and_fully_validated(self):
+        self.write(
+            "role/ML24477-RIPE",
+            """role:           MoeDove LLC
+address:        1209 Mountain Road Pl Ne, Ste N, Albuquerque, NM 87110, United States
+abuse-mailbox:  noc@moedove.com
+nic-hdl:        ML24477-RIPE
+mnt-by:         MOEDOVE-MNT
+created:        2023-12-29T07:55:58Z
+last-modified:  2025-11-15T03:51:30Z
+source:         RIPE # Filtered
+""",
+        )
+        self.commit("misplaced role", "2020-01-02T12:00:00+00:00")
+
+        errors = self.check(self.base, self.rev())
+
+        self.assertIn(
+            "role/ML24477-RIPE: object must be stored at 'data/role/ML24477-RIPE'",
+            errors,
+        )
+        for expected in (
+            "publication-controlled attribute 'mnt-by' must be omitted",
+            "dangerous attribute 'created' is forbidden",
+            "dangerous attribute 'last-modified' is forbidden",
+            "missing required attribute 'changed'",
+            "missing required attribute 'e-mail'",
+            "missing required attribute 'phone'",
+            "contact source must be AFRINIC, APNIC, ARIN, LACNIC, or RIPE",
+        ):
+            with self.subTest(expected=expected):
+                self.assertTrue(any(expected in error for error in errors))
+
+    def test_control_only_change_remains_not_applicable(self):
+        self.write("README.md", "control-only change\n")
+        self.commit("control only", "2020-01-02T12:00:00+00:00")
+
+        self.assertEqual(self.check(self.base, self.rev()), [])
+
     def test_base_control_changes_are_not_attributed_to_a_stale_data_pr(self):
         main_branch = self.git("branch", "--show-current")
         self.git("checkout", "-q", "-b", "submission")

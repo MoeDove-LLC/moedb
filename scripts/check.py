@@ -17,6 +17,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 try:
     from .rpsl import (
         CONTACT_CLASSES,
+        OBJECT_CLASSES,
         RPSLError,
         RPSLObject,
         git_file_text,
@@ -30,6 +31,7 @@ try:
 except ImportError:  # Direct execution: python scripts/check.py
     from rpsl import (
         CONTACT_CLASSES,
+        OBJECT_CLASSES,
         RPSLError,
         RPSLObject,
         git_file_text,
@@ -193,6 +195,13 @@ def _is_data_path(path: str) -> bool:
     return bool(parts and parts[0] == "data")
 
 
+def _is_misplaced_object_path(path: str) -> bool:
+    """Identify contributor object directories that are missing the data/ prefix."""
+
+    parts = PurePosixPath(path).parts
+    return bool(parts and parts[0] in OBJECT_CLASSES)
+
+
 def _parse_revision_object(text: str | None, path: str) -> tuple[RPSLObject | None, list[str]]:
     if text is None:
         return None, []
@@ -267,6 +276,26 @@ def check_pr(
     control_paths = [path for path in changed_paths if not _is_data_path(path)]
     if data_paths and control_paths:
         errors.append("data and control files must be submitted in separate pull requests")
+
+    # A path such as role/EXAMPLE-RIPE is an object submission with a missing
+    # data/ prefix, not an ordinary control-file change. Validate its contents
+    # before the control-only early return so a misplaced object cannot receive
+    # a false-green result. Deleting such a legacy path is allowed.
+    for path in control_paths:
+        if not _is_misplaced_object_path(path):
+            continue
+        try:
+            new_text = git_file_text(root_path, after, path)
+        except RPSLError as error:
+            errors.append(str(error))
+            continue
+        if new_text is None:
+            continue
+        new_obj, object_errors = _parse_revision_object(new_text, path)
+        errors.extend(object_errors)
+        if new_obj is not None:
+            errors.extend(validate_object(new_obj, path))
+
     if not data_paths:
         return _unique_errors(errors)
 

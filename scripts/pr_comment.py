@@ -108,6 +108,30 @@ def user_suggestions(output: str) -> list[str]:
             f"`data/role/{handle}`（角色），并确保对象的 `nic-hdl` 为 `{handle}`。"
         )
 
+    missing_attributes = list(
+        dict.fromkeys(re.findall(r"missing required attribute '([a-z0-9-]+)'", output))
+    )
+    if missing_attributes:
+        attributes = "、".join(f"`{attribute}`" for attribute in missing_attributes)
+        suggestions.append(f"补齐必填属性：{attributes}。")
+
+    dangerous_attributes = list(
+        dict.fromkeys(re.findall(r"dangerous attribute '([a-z0-9-]+)' is forbidden", output))
+    )
+    if dangerous_attributes:
+        attributes = "、".join(f"`{attribute}`" for attribute in dangerous_attributes)
+        suggestions.append(f"删除禁止投稿的属性：{attributes}。")
+
+    if "contact source must be afrinic, apnic, arin, lacnic, or ripe" in lowered:
+        suggestions.append(
+            "联系人 `source` 只能填写一个 RIR 名称，例如 `RIPE`；不要附加 `# Filtered`。"
+        )
+    if (
+        "changed must be 'email@example.net yyyymmdd'" in lowered
+        and "changed" not in missing_attributes
+    ):
+        suggestions.append("将 `changed` 写成 `email@example.net YYYYMMDD`。")
+
     rules = (
         (("must be stored at", "must not use the .rpsl suffix"),
          "按报错给出的规范路径重命名文件，并移除 `.txt` / `.rpsl` 等扩展名。"),
