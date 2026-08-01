@@ -1,7 +1,0 @@
-as-set:        AS-FR
-descr:         FRNIC
-members:       AS211575:AS-RUINETWORK
-admin-c:       STE-MDNIC
-tech-c:        STE-MDNIC
-changed:       i@lookatthesky.cn 20260801
-source:        MDNIC
