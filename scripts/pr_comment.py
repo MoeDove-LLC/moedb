@@ -140,11 +140,7 @@ def build_comment(
         and report is not None
         and report.get("exit_code") == 0
     )
-    infrastructure_failure = (
-        report is None
-        or job_result in {"cancelled", "skipped"}
-        or (job_result != "success" and report.get("exit_code") == 0)
-    )
+    infrastructure_failure = job_result != "success" or report is None
     lines = [COMMENT_MARKER, "## RPSL 自动检查", ""]
     if passed:
         lines.extend(

@@ -81,7 +81,9 @@ jobs:
             --root "$GITHUB_WORKSPACE/submission" \
             --event "$GITHUB_EVENT_PATH" \
             2>&1 | tee "$RUNNER_TEMP/rpsl-check.log"
-          check_exit=${PIPESTATUS[0]}
+          pipeline_status=("${PIPESTATUS[@]}")
+          check_exit=${pipeline_status[0]}
+          tee_exit=${pipeline_status[1]}
           set -e
           printf '::%s::\n' "$stop_token"
           trap - EXIT
@@ -89,12 +91,16 @@ jobs:
             --log "$RUNNER_TEMP/rpsl-check.log" \
             --exit-code "$check_exit" \
             --github-output "$GITHUB_OUTPUT"
-
-      - name: Preserve required-check result
-        if: always()
-        env:
-          CHECK_EXIT_CODE: ${{ steps.validation.outputs.exit_code }}
-        run: test "$CHECK_EXIT_CODE" = "0"
+          if [ "$tee_exit" -ne 0 ]; then
+            echo "::error::Unable to capture RPSL checker output (tee exit $tee_exit)"
+            exit "$tee_exit"
+          fi
+          if [ "$check_exit" -eq 1 ]; then
+            echo "RPSL validation found submission errors; the Bot will publish them on the PR."
+          elif [ "$check_exit" -ne 0 ]; then
+            echo "::error::RPSL checker did not complete (exit $check_exit)"
+            exit "$check_exit"
+          fi
 
   report:
     if: always()

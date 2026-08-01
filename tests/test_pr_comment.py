@@ -51,7 +51,7 @@ class PrCommentTests(unittest.TestCase):
             ),
         }
         body, passed, description = build_comment(
-            job_result="failure",
+            job_result="success",
             report=report,
             head_sha="a" * 40,
             run_url="https://github.com/o/r/actions/runs/1",
@@ -113,6 +113,18 @@ class PrCommentTests(unittest.TestCase):
         self.assertIn("检查未能可靠完成", body)
         self.assertNotIn("投稿者修改建议", body)
 
+    def test_failed_job_with_checker_errors_is_an_infrastructure_failure(self):
+        body, passed, description = build_comment(
+            job_result="failure",
+            report={"version": 1, "exit_code": 1, "output": "ERROR: invalid"},
+            head_sha="c" * 40,
+            run_url="https://github.com/o/r/actions/runs/5",
+        )
+        self.assertFalse(passed)
+        self.assertEqual(description, "RPSL validation did not complete")
+        self.assertIn("检查未能可靠完成", body)
+        self.assertNotIn("投稿者修改建议", body)
+
     def test_suggestions_cover_reported_pr_failures(self):
         output = "\n".join(
             [
@@ -154,8 +166,14 @@ class PrCommentTests(unittest.TestCase):
             )
 
             self.assertEqual(result, 0)
-            encoded = output.read_text(encoding="utf-8").splitlines()[0].split("=", 1)[1]
+            values = dict(
+                line.split("=", 1)
+                for line in output.read_text(encoding="utf-8").splitlines()
+            )
+            self.assertEqual(values["exit_code"], "1")
+            encoded = values["report"]
             report = decode_report(encoded)
+            self.assertEqual(report["exit_code"], 1)
             self.assertIn("output truncated", report["output"])
 
     def test_github_transport_disables_proxy_and_redirects(self):
@@ -220,6 +238,21 @@ class PrCommentTests(unittest.TestCase):
         self.assertLess(untrusted, restore)
         self.assertIn("trap 'printf", workflow)
         self.assertIn("trap - EXIT", workflow)
+
+    def test_workflow_uses_custom_status_for_validation_result(self):
+        workflow = (
+            Path(__file__).parents[1] / ".github/workflows/check.yml"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("Preserve required-check result", workflow)
+        self.assertNotIn("CHECK_EXIT_CODE", workflow)
+        self.assertIn("report:\n    if: always()\n    needs: [prepare, check]", workflow)
+        self.assertIn("MOEDB_CHECK_JOB_RESULT: ${{ needs.check.result }}", workflow)
+        self.assertIn(
+            "MOEDB_CHECK_REPORT: ${{ needs.check.outputs.report }}", workflow
+        )
+        self.assertIn("RPSL validation found submission errors", workflow)
+        self.assertIn('elif [ "$check_exit" -ne 0 ]', workflow)
+        self.assertIn('exit "$check_exit"', workflow)
 
     def test_upsert_updates_existing_bot_comment(self):
         calls = []
@@ -324,7 +357,7 @@ class PrCommentTests(unittest.TestCase):
             "owner/repo",
             9,
             "a" * 40,
-            "failure",
+            "success",
             {"version": 1, "exit_code": 1, "output": "ERROR: invalid"},
             "https://github.com/owner/repo/actions/runs/11",
             requester=requester,
