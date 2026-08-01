@@ -246,6 +246,8 @@ def _semantic(obj, *, core: bool, repository: bool = False) -> tuple[tuple[str, 
         if entry.name in ignored:
             continue
         normalized = " ".join(entry.value.split())
+        if entry.name == "changed":
+            normalized = normalized.partition(" #")[0]
         if (
             core
             and entry.name in {"descr", "remarks"}

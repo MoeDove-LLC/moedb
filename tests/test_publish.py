@@ -112,6 +112,24 @@ class PublicationTests(unittest.TestCase):
         self.assertNotIn("contributor@example.net", sent)
         self.assertGreaterEqual([call[0] for call in client.calls].count("fetch"), 2)
 
+    def test_post_write_verification_accepts_radb_generated_metadata(self):
+        item = change("create", None, ROLE)
+
+        class RadbNormalizingClient(FakeClient):
+            def create(self, ref, body):
+                self.calls.append(("create", ref, body))
+                normalized = body.replace(
+                    f"changed:       {EMAIL} {DATE}\n",
+                    f"changed:       {EMAIL} {DATE} # 1921 GMT\n",
+                )
+                normalized += "last-modified:  2026-08-01T19:21:33Z\n"
+                self.objects[ref] = normalized
+                return 200
+
+        client = RadbNormalizingClient()
+
+        self.assertEqual(self.publish([item], client)[0][1], "created")
+
     def test_update_checks_base_then_is_idempotent(self):
         item = change("update", OLD_ROUTE, NEW_ROUTE)
         ref = item[1]
