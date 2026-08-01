@@ -26,6 +26,11 @@ MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_RIR_VERIFIED_RE = re.compile(
+    r"^OK: RIR verified: (person|role) '([A-Z0-9][A-Z0-9_-]{1,79})' "
+    r"exists as an exact entity at (AFRINIC|APNIC|ARIN|LACNIC|RIPE)$",
+    re.MULTILINE,
+)
 
 
 class ReportError(RuntimeError):
@@ -132,6 +137,26 @@ def user_suggestions(output: str) -> list[str]:
     return suggestions
 
 
+def _rir_verified_message(output: str) -> str | None:
+    match = _RIR_VERIFIED_RE.search(output)
+    if match:
+        object_class, handle, source = match.groups()
+        return (
+            f"**RIR 联系人验证**：✅ 本地 `{object_class}` 联系人 `{handle}` 已在 "
+            f"`{source}` RDAP 中找到 entity，返回 handle 精确一致。"
+        )
+    return None
+
+
+def _rir_success_message(output: str) -> str:
+    verified = _rir_verified_message(output)
+    if verified:
+        return verified
+    if "OK: RIR verification not applicable" in output.splitlines():
+        return "**RIR 联系人验证**：本次没有可查询的最终 `person` / `role` 联系人对象。"
+    return "**RIR 联系人验证**：未报告独立结果，请查看 Actions 日志。"
+
+
 def build_comment(
     *, job_result: str, report: dict[str, object] | None, head_sha: str, run_url: str
 ) -> tuple[str, bool, str]:
@@ -143,9 +168,12 @@ def build_comment(
     infrastructure_failure = job_result != "success" or report is None
     lines = [COMMENT_MARKER, "## RPSL 自动检查", ""]
     if passed:
+        output = str(report.get("output", "")) if report is not None else ""
         lines.extend(
             [
                 "✅ 检查通过，可以进入人工审核。",
+                "",
+                _rir_success_message(output),
                 "",
                 "**投稿者建议**：当前无需修改；如继续 push，此评论会自动更新。",
                 "",
@@ -170,6 +198,9 @@ def build_comment(
         lines.append("❌ 检查未通过，请修正后重新 push。")
         if report is not None:
             output = str(report.get("output", ""))
+            rir_verified = _rir_verified_message(output)
+            if rir_verified:
+                lines.extend(["", rir_verified])
             lines.extend(["", "<details open><summary>检查输出</summary>", "", "<pre>"])
             lines.append(html.escape(output))
             lines.extend(["</pre>", "", "</details>", "", "**投稿者修改建议**："])

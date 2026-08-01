@@ -65,18 +65,80 @@ class PrCommentTests(unittest.TestCase):
         self.assertIn("管理员建议", body)
         self.assertIn("git mv -- data/person/X", body)
 
+    def test_failed_comment_still_reports_a_successful_rir_lookup(self):
+        body, passed, description = build_comment(
+            job_result="success",
+            report={
+                "version": 1,
+                "exit_code": 1,
+                "output": (
+                    "ERROR: data/as-set/AS-FR.txt: object must be stored at "
+                    "'data/as-set/AS-FR'\n"
+                    "OK: RIR verified: role 'NOC1-ARIN' exists as an exact entity at ARIN"
+                ),
+            },
+            head_sha="a" * 40,
+            run_url="https://github.com/o/r/actions/runs/1",
+        )
+        self.assertFalse(passed)
+        self.assertEqual(description, "RPSL validation failed")
+        self.assertIn("本地 `role` 联系人 `NOC1-ARIN`", body)
+        self.assertIn("`ARIN` RDAP", body)
+        self.assertIn("git mv -- data/as-set/AS-FR.txt", body)
+
     def test_success_comment(self):
         body, passed, description = build_comment(
             job_result="success",
-            report={"version": 1, "exit_code": 0, "output": "OK"},
+            report={
+                "version": 1,
+                "exit_code": 0,
+                "output": (
+                    "OK: RIR verified: person 'JD1-RIPE' exists as an exact entity at RIPE\n"
+                    "OK: RPSL data passed all checks"
+                ),
+            },
             head_sha="b" * 40,
             run_url="https://github.com/o/r/actions/runs/2",
         )
         self.assertTrue(passed)
         self.assertEqual(description, "RPSL validation passed")
         self.assertIn("检查通过", body)
+        self.assertIn("本地 `person` 联系人 `JD1-RIPE`", body)
+        self.assertIn("`RIPE` RDAP", body)
+        self.assertIn("handle 精确一致", body)
         self.assertIn("投稿者建议", body)
         self.assertIn("管理员建议", body)
+
+    def test_success_comment_reports_role_verification(self):
+        body, passed, _description = build_comment(
+            job_result="success",
+            report={
+                "version": 1,
+                "exit_code": 0,
+                "output": (
+                    "OK: RIR verified: role 'NOC1-ARIN' exists as an exact entity at ARIN"
+                ),
+            },
+            head_sha="b" * 40,
+            run_url="https://github.com/o/r/actions/runs/2",
+        )
+        self.assertTrue(passed)
+        self.assertIn("本地 `role` 联系人 `NOC1-ARIN`", body)
+        self.assertIn("`ARIN` RDAP", body)
+
+    def test_success_comment_reports_when_rir_verification_is_not_applicable(self):
+        body, passed, _description = build_comment(
+            job_result="success",
+            report={
+                "version": 1,
+                "exit_code": 0,
+                "output": "OK: RIR verification not applicable",
+            },
+            head_sha="b" * 40,
+            run_url="https://github.com/o/r/actions/runs/2",
+        )
+        self.assertTrue(passed)
+        self.assertIn("没有可查询的最终 `person` / `role`", body)
 
     def test_missing_report_is_an_infrastructure_failure(self):
         body, passed, description = build_comment(

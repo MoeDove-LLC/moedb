@@ -241,6 +241,7 @@ def check_pr(
     *,
     verify_rir: bool = True,
     opener=None,
+    rir_confirmations: list[str] | None = None,
     pr_author_id: int | None = None,
     repository: str | None = None,
     repository_id: int | None = None,
@@ -387,6 +388,13 @@ def check_pr(
                 rir_error = verify_contact_at_rir(contact, opener)
                 if rir_error:
                     errors.append(f"{contact_path}: {rir_error}")
+                elif rir_confirmations is not None:
+                    confirmation = (
+                        f"RIR verified: {contact.object_class} '{handle}' exists as an "
+                        f"exact entity at {contact.first('source')}"
+                    )
+                    if confirmation not in rir_confirmations:
+                        rir_confirmations.append(confirmation)
     return _unique_errors(errors)
 
 
@@ -459,6 +467,7 @@ def _arguments(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _arguments(sys.argv[1:] if argv is None else argv)
+    rir_confirmations: list[str] = []
     if args.event:
         try:
             context = _pull_request_event(args.event)
@@ -469,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.root,
                 context["before"],
                 context["after"],
+                rir_confirmations=rir_confirmations,
                 pr_author_id=context["pr_author_id"],
                 repository=context["repository"],
                 repository_id=context["repository_id"],
@@ -476,13 +486,22 @@ def main(argv: list[str] | None = None) -> int:
                 github_token=os.environ.get("GITHUB_TOKEN"),
             )
     elif args.base:
-        errors = check_pr(args.root, args.base, args.head)
+        errors = check_pr(
+            args.root,
+            args.base,
+            args.head,
+            rir_confirmations=rir_confirmations,
+        )
     else:
         errors = validate_repository(args.root)
+    for error in errors:
+        print(f"ERROR: {error}")
+    for confirmation in rir_confirmations:
+        print(f"OK: {confirmation}")
     if errors:
-        for error in errors:
-            print(f"ERROR: {error}")
         return 1
+    if args.event and not rir_confirmations:
+        print("OK: RIR verification not applicable")
     print("OK: RPSL data passed all checks")
     return 0
 

@@ -461,6 +461,7 @@ class PullRequestTests(GitRepositoryCase):
         )
         self.commit("route only", "2020-01-03T12:00:00+00:00")
         seen = []
+        confirmations = []
 
         def opener(request, timeout):
             self.assertEqual(timeout, 10)
@@ -476,9 +477,61 @@ class PullRequestTests(GitRepositoryCase):
             pr_author_id=42,
             owner_resolver=lambda _commit: 42,
             opener=opener,
+            rir_confirmations=confirmations,
         )
         self.assertEqual(errors, [])
         self.assertEqual(seen, [RDAP_ENTITY_URLS["ARIN"] + "NOC1-ARIN"])
+        self.assertEqual(
+            confirmations,
+            ["RIR verified: role 'NOC1-ARIN' exists as an exact entity at ARIN"],
+        )
+
+    def test_person_rir_success_is_recorded_only_after_an_exact_match(self):
+        self.base = self.valid_submission()
+        self.write(
+            "data/route/192.0.2.0_24__AS64496",
+            route(date="20200103").replace(
+                "source:        MDNIC", "remarks:       Updated route\nsource:        MDNIC"
+            ),
+        )
+        self.commit("route only", "2020-01-03T12:00:00+00:00")
+
+        confirmations = []
+        errors = check_pr(
+            self.root,
+            self.base,
+            self.rev(),
+            pr_author_id=42,
+            owner_resolver=lambda _commit: 42,
+            opener=lambda _request, timeout: FakeResponse(
+                json.dumps(
+                    {"objectClassName": "entity", "handle": "JD1-RIPE"}
+                ).encode()
+            ),
+            rir_confirmations=confirmations,
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            confirmations,
+            ["RIR verified: person 'JD1-RIPE' exists as an exact entity at RIPE"],
+        )
+
+        mismatched_confirmations = []
+        errors = check_pr(
+            self.root,
+            self.base,
+            self.rev(),
+            pr_author_id=42,
+            owner_resolver=lambda _commit: 42,
+            opener=lambda _request, timeout: FakeResponse(
+                json.dumps(
+                    {"objectClassName": "entity", "handle": "OTHER-RIPE"}
+                ).encode()
+            ),
+            rir_confirmations=mismatched_confirmations,
+        )
+        self.assertTrue(any("different handle" in error for error in errors))
+        self.assertEqual(mismatched_confirmations, [])
 
     def test_existing_owner_is_resolved_automatically_from_github(self):
         self.base = self.valid_submission()
@@ -695,20 +748,24 @@ class GitHubEventTests(unittest.TestCase):
 
 class RDAPTests(unittest.TestCase):
     def test_each_source_uses_only_its_fixed_endpoint_and_exact_handle(self):
-        for source, base in RDAP_ENTITY_URLS.items():
-            with self.subTest(source=source):
-                handle = "TEST1-" + source
-                obj = parse_text(person(handle=handle, source=source))
-                seen = []
+        factories = {"person": person, "role": role}
+        for object_class, factory in factories.items():
+            for source, base in RDAP_ENTITY_URLS.items():
+                with self.subTest(object_class=object_class, source=source):
+                    handle = "TEST1-" + source
+                    obj = parse_text(factory(handle=handle, source=source))
+                    seen = []
 
-                def opener(request, timeout):
-                    seen.append((request.full_url, timeout))
-                    return FakeResponse(
-                        json.dumps({"objectClassName": "entity", "handle": handle}).encode()
-                    )
+                    def opener(request, timeout):
+                        seen.append((request.full_url, timeout))
+                        return FakeResponse(
+                            json.dumps(
+                                {"objectClassName": "entity", "handle": handle}
+                            ).encode()
+                        )
 
-                self.assertIsNone(verify_contact_at_rir(obj, opener))
-                self.assertEqual(seen, [(base + handle, 10)])
+                    self.assertIsNone(verify_contact_at_rir(obj, opener))
+                    self.assertEqual(seen, [(base + handle, 10)])
 
     def test_different_handle_is_not_accepted(self):
         obj = parse_text(person())
