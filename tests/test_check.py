@@ -179,8 +179,15 @@ class RPSLValidationTests(unittest.TestCase):
                 published = parse_text(transformed)
                 self.assertEqual(transformed.count("changed:"), 1)
                 self.assertEqual(transformed.count("source:"), 1)
+                review_attribute = (
+                    "remarks" if factory.__name__ in {"person", "role"} else "descr"
+                )
                 self.assertEqual(
-                    published.values("descr").count(RADB_REVIEWED_DESCRIPTION), 1
+                    published.values(review_attribute).count(RADB_REVIEWED_DESCRIPTION), 1
+                )
+                other_attribute = "descr" if review_attribute == "remarks" else "remarks"
+                self.assertNotIn(
+                    RADB_REVIEWED_DESCRIPTION, published.values(other_attribute)
                 )
                 self.assertIn("changed:       publish@example.net 20200103", transformed)
                 self.assertIn("source:        RADB", transformed)
@@ -198,6 +205,22 @@ class RPSLValidationTests(unittest.TestCase):
             )
         )
         self.assertEqual(published.values("descr").count(RADB_REVIEWED_DESCRIPTION), 1)
+
+        legacy_contact_marker = person().replace(
+            "nic-hdl:", f"descr:         {RADB_REVIEWED_DESCRIPTION}\nnic-hdl:"
+        )
+        published = parse_text(
+            transform_for_radb(
+                parse_text(legacy_contact_marker),
+                "publish@example.net",
+                "20200103",
+                "MAINT-MOEDB",
+            )
+        )
+        self.assertNotIn(RADB_REVIEWED_DESCRIPTION, published.values("descr"))
+        self.assertEqual(
+            published.values("remarks").count(RADB_REVIEWED_DESCRIPTION), 1
+        )
 
         legacy = route().replace(
             "changed:", "mnt-by:        LEGACY-MNT\nchanged:"

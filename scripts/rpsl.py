@@ -503,12 +503,13 @@ def transform_for_radb(
         raise RPSLError("RADB publication date must be YYYYMMDD") from None
     if parsed_date > datetime.now(timezone.utc).date():
         raise RPSLError("RADB publication date must not be in the future")
+    review_attribute = "remarks" if obj.object_class in CONTACT_CLASSES else "descr"
     lines = [
         line
         for entry in obj.entries
         if entry.name not in {"changed", "source", "mnt-by"}
         and not (
-            entry.name == "descr"
+            entry.name in {"descr", "remarks"}
             and " ".join(entry.value.split()) == RADB_REVIEWED_DESCRIPTION
         )
         for line in entry.raw_lines
@@ -516,7 +517,7 @@ def transform_for_radb(
     lines.extend(
         (
             f"{'mnt-by:':<16}{maintainer}",
-            f"{'descr:':<16}{RADB_REVIEWED_DESCRIPTION}",
+            f"{review_attribute + ':':<16}{RADB_REVIEWED_DESCRIPTION}",
             f"changed:       {email} {date}",
             "source:        RADB",
         )

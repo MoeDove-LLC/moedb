@@ -107,7 +107,8 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(obj.values("source"), ("RADB",))
         self.assertEqual(obj.values("changed"), (f"{EMAIL} {DATE}",))
         self.assertEqual(obj.values("mnt-by"), (MAINTAINER,))
-        self.assertEqual(obj.values("descr"), (RADB_REVIEWED_DESCRIPTION,))
+        self.assertEqual(obj.values("remarks"), (RADB_REVIEWED_DESCRIPTION,))
+        self.assertEqual(obj.values("descr"), ())
         self.assertNotIn("contributor@example.net", sent)
         self.assertGreaterEqual([call[0] for call in client.calls].count("fetch"), 2)
 
@@ -286,6 +287,28 @@ class RadbClientTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertNotIn("secret", rendered)
         self.assertNotIn("https://", rendered)
+
+    def test_http_error_reports_redacted_server_detail(self):
+        def transport(request, timeout):
+            body = (
+                "Unknown attribute descr for person; "
+                "portal-user account-secret irr secret irr+secret"
+            ).encode()
+            raise HTTPError(request.full_url, 400, "bad request", {}, io.BytesIO(body))
+
+        client = publish.RadbClient(
+            "portal-user", "account-secret", "irr secret", transport=transport
+        )
+        with self.assertRaises(publish.PublishError) as caught:
+            client.create(("person", ("PETER-AP",)), ROLE)
+
+        rendered = str(caught.exception)
+        self.assertIn("RADB POST failed with HTTP 400", rendered)
+        self.assertIn("Unknown attribute descr for person", rendered)
+        self.assertNotIn("portal-user", rendered)
+        self.assertNotIn("account-secret", rendered)
+        self.assertNotIn("irr secret", rendered)
+        self.assertNotIn("irr+secret", rendered)
 
     def test_read_404_means_absent(self):
         calls = []

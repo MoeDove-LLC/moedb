@@ -90,6 +90,21 @@ class RadbClient:
             f"{username}:{account_password}".encode("utf-8")
         ).decode("ascii")
         self._irr_password = irr_password
+        encoded_values = [
+            urlencode({"value": value}).partition("=")[2]
+            for value in (username, account_password, irr_password)
+        ]
+        self._redactions = tuple(
+            dict.fromkeys(
+                (
+                    username,
+                    account_password,
+                    irr_password,
+                    self._basic,
+                    *encoded_values,
+                )
+            )
+        )
         self._transport = transport
         self._timeout = timeout
 
@@ -145,18 +160,39 @@ class RadbClient:
             if len(raw) > MAX_RESPONSE_BYTES:
                 raise PublishError(f"RADB {method} response was too large")
             if not 200 <= status < 300:
-                raise PublishError(f"RADB {method} failed with HTTP {status}")
+                detail = self._response_detail(raw)
+                suffix = f": {detail}" if detail else ""
+                raise PublishError(f"RADB {method} failed with HTTP {status}{suffix}")
             return status, raw.decode("utf-8", errors="replace")
         except HTTPError as error:
             status = int(error.code)
-            error.close()
             if status == 404 and missing_ok:
+                error.close()
                 return None
+            raw = b""
+            if error.fp is not None:
+                try:
+                    raw = error.read(MAX_RESPONSE_BYTES + 1)
+                except OSError:
+                    pass
+            error.close()
             suffix = "; write outcome is unknown" if write and status in UNCERTAIN_WRITE_STATUS else ""
-            raise PublishError(f"RADB {method} failed with HTTP {status}{suffix}") from None
+            detail = self._response_detail(raw)
+            detail_suffix = f": {detail}" if detail else ""
+            raise PublishError(
+                f"RADB {method} failed with HTTP {status}{suffix}{detail_suffix}"
+            ) from None
         except (URLError, TimeoutError, OSError) as error:
             suffix = "; write outcome is unknown" if write else ""
             raise PublishError(f"RADB {method} failed ({type(error).__name__}){suffix}") from None
+
+    def _response_detail(self, raw: bytes) -> str:
+        if not raw or len(raw) > MAX_RESPONSE_BYTES:
+            return ""
+        detail = raw.decode("utf-8", errors="replace")
+        for value in self._redactions:
+            detail = detail.replace(value, "[REDACTED]")
+        return " ".join(detail.split())[:512]
 
 
 def _object_path(ref: tuple[str, tuple[str, ...]]) -> str:
@@ -210,7 +246,11 @@ def _semantic(obj, *, core: bool, repository: bool = False) -> tuple[tuple[str, 
         if entry.name in ignored:
             continue
         normalized = " ".join(entry.value.split())
-        if core and entry.name == "descr" and normalized == RADB_REVIEWED_DESCRIPTION:
+        if (
+            core
+            and entry.name in {"descr", "remarks"}
+            and normalized == RADB_REVIEWED_DESCRIPTION
+        ):
             continue
         values.append((entry.name, normalized))
     return tuple(sorted(values))
@@ -286,7 +326,8 @@ def _desired(obj, email: str, date: str, maintainer: str) -> str:
         raise PublishError("publication transformation did not replace source and changed")
     if parsed.values("mnt-by") != (maintainer,):
         raise PublishError("publication transformation did not set the maintainer")
-    if parsed.values("descr").count(RADB_REVIEWED_DESCRIPTION) != 1:
+    review_attribute = "remarks" if parsed.object_class in {"person", "role"} else "descr"
+    if parsed.values(review_attribute).count(RADB_REVIEWED_DESCRIPTION) != 1:
         raise PublishError("publication transformation did not add the reviewed description")
     return rendered
 
