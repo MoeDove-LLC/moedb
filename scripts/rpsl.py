@@ -14,6 +14,7 @@ import subprocess
 OBJECT_CLASSES = frozenset({"as-set", "person", "role", "route", "route6"})
 CONTACT_CLASSES = frozenset({"person", "role"})
 RIR_SOURCES = frozenset({"AFRINIC", "APNIC", "ARIN", "LACNIC", "RIPE"})
+RADB_REVIEWED_DESCRIPTION = "Customer Object - Reviewed"
 DANGEROUS_ATTRIBUTES = frozenset(
     {
         "api-key",
@@ -476,9 +477,19 @@ def transform_for_radb(obj: RPSLObject, email: str, date: str) -> str:
         line
         for entry in obj.entries
         if entry.name not in {"changed", "source"}
+        and not (
+            entry.name == "descr"
+            and " ".join(entry.value.split()) == RADB_REVIEWED_DESCRIPTION
+        )
         for line in entry.raw_lines
     ]
-    lines.extend((f"changed:       {email} {date}", "source:        RADB"))
+    lines.extend(
+        (
+            f"{'descr:':<16}{RADB_REVIEWED_DESCRIPTION}",
+            f"changed:       {email} {date}",
+            "source:        RADB",
+        )
+    )
     return "\n".join(lines) + "\n"
 
 

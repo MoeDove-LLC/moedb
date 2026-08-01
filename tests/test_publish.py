@@ -11,7 +11,11 @@ from urllib.error import HTTPError, URLError
 from unittest.mock import patch
 
 from scripts import publish
-from scripts.rpsl import parse_text, transform_for_radb
+from scripts.rpsl import (
+    RADB_REVIEWED_DESCRIPTION,
+    parse_text,
+    transform_for_radb,
+)
 
 
 MAINTAINER = "MAINT-MOEDB"
@@ -100,6 +104,7 @@ class PublicationTests(unittest.TestCase):
         obj = parse_text(sent)
         self.assertEqual(obj.values("source"), ("RADB",))
         self.assertEqual(obj.values("changed"), (f"{EMAIL} {DATE}",))
+        self.assertEqual(obj.values("descr"), (RADB_REVIEWED_DESCRIPTION,))
         self.assertNotIn("contributor@example.net", sent)
         self.assertGreaterEqual([call[0] for call in client.calls].count("fetch"), 2)
 
@@ -112,6 +117,18 @@ class PublicationTests(unittest.TestCase):
         writes = len([call for call in client.calls if call[0] == "update"])
         self.assertEqual(self.publish([item], client)[0][1], "already-current")
         self.assertEqual(len([call for call in client.calls if call[0] == "update"]), writes)
+
+    def test_update_adds_review_marker_to_legacy_remote(self):
+        item = change("update", OLD_ROUTE, NEW_ROUTE)
+        marker = f"{'descr:':<16}{RADB_REVIEWED_DESCRIPTION}\n"
+        legacy_remote = transformed(OLD_ROUTE, "20231231").replace(marker, "")
+        client = FakeClient({item[1]: legacy_remote})
+
+        self.assertEqual(self.publish([item], client)[0][1], "updated")
+        sent = next(call[2] for call in client.calls if call[0] == "update")
+        self.assertEqual(
+            parse_text(sent).values("descr").count(RADB_REVIEWED_DESCRIPTION), 1
+        )
 
     def test_update_and_delete_refuse_remote_core_drift(self):
         drifted = transformed(OLD_ROUTE.replace("old description", "outside edit"))
@@ -135,6 +152,9 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(deletion.values("changed"), (f"{EMAIL} 20231231",))
         self.assertEqual(deletion.values("source"), ("RADB",))
         self.assertEqual(deletion.values("delete"), (f"{EMAIL} {REASON}",))
+        self.assertEqual(
+            deletion.values("descr").count(RADB_REVIEWED_DESCRIPTION), 1
+        )
         self.assertIn(f"delete:         {EMAIL} {REASON}", body)
         self.assertEqual(body.count("source:"), 1)
         self.assertTrue(body.rstrip().endswith(f"delete:         {EMAIL} {REASON}"))

@@ -24,6 +24,7 @@ from urllib.request import (
 
 try:  # Supports both ``python scripts/publish.py`` and test imports.
     from .rpsl import (
+        RADB_REVIEWED_DESCRIPTION,
         git_changed_paths,
         git_commit_date,
         git_file_text,
@@ -32,6 +33,7 @@ try:  # Supports both ``python scripts/publish.py`` and test imports.
     )
 except ImportError:  # pragma: no cover - exercised by the workflow entry point
     from rpsl import (  # type: ignore[no-redef]
+        RADB_REVIEWED_DESCRIPTION,
         git_changed_paths,
         git_commit_date,
         git_file_text,
@@ -205,7 +207,10 @@ def _semantic(obj, *, core: bool) -> tuple[tuple[str, str], ...]:
     for entry in obj.entries:
         if entry.name in ignored:
             continue
-        values.append((entry.name, " ".join(entry.value.split())))
+        normalized = " ".join(entry.value.split())
+        if core and entry.name == "descr" and normalized == RADB_REVIEWED_DESCRIPTION:
+            continue
+        values.append((entry.name, normalized))
     return tuple(sorted(values))
 
 
@@ -281,6 +286,8 @@ def _desired(obj, email: str, date: str, maintainer: str) -> str:
         raise PublishError("publication transformation changed the object identity")
     if parsed.values("source") != ("RADB",) or parsed.values("changed") != (f"{email} {date}",):
         raise PublishError("publication transformation did not replace source and changed")
+    if parsed.values("descr").count(RADB_REVIEWED_DESCRIPTION) != 1:
+        raise PublishError("publication transformation did not add the reviewed description")
     return rendered
 
 

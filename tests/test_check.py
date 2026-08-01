@@ -18,6 +18,7 @@ from scripts.check import (
     verify_contact_at_rir,
 )
 from scripts.rpsl import (
+    RADB_REVIEWED_DESCRIPTION,
     RPSLError,
     git_changed_paths,
     git_commit_date,
@@ -157,13 +158,29 @@ class RPSLValidationTests(unittest.TestCase):
         self.assertTrue(any("must not use the .rpsl" in error for error in errors))
         self.assertTrue(any("mnt-by must be exactly" in error for error in errors))
 
-    def test_transform_replaces_only_changed_and_source(self):
-        transformed = transform_for_radb(parse_text(route()), "publish@example.net", "20200103")
-        self.assertEqual(transformed.count("changed:"), 1)
-        self.assertEqual(transformed.count("source:"), 1)
-        self.assertIn("changed:       publish@example.net 20200103", transformed)
-        self.assertIn("source:        RADB", transformed)
-        self.assertIn("mnt-by:        MAINT-MOEDB", transformed)
+    def test_transform_adds_review_marker_and_replaces_publication_fields(self):
+        for factory in (person, role, route, route6, as_set):
+            with self.subTest(object_class=factory.__name__):
+                transformed = transform_for_radb(
+                    parse_text(factory()), "publish@example.net", "20200103"
+                )
+                published = parse_text(transformed)
+                self.assertEqual(transformed.count("changed:"), 1)
+                self.assertEqual(transformed.count("source:"), 1)
+                self.assertEqual(
+                    published.values("descr").count(RADB_REVIEWED_DESCRIPTION), 1
+                )
+                self.assertIn("changed:       publish@example.net 20200103", transformed)
+                self.assertIn("source:        RADB", transformed)
+                self.assertIn("mnt-by:        MAINT-MOEDB", transformed)
+
+        already_marked = route().replace(
+            "origin:", f"descr:         {RADB_REVIEWED_DESCRIPTION}\norigin:"
+        )
+        published = parse_text(
+            transform_for_radb(parse_text(already_marked), "publish@example.net", "20200103")
+        )
+        self.assertEqual(published.values("descr").count(RADB_REVIEWED_DESCRIPTION), 1)
 
 
 class RepositoryValidationTests(unittest.TestCase):
