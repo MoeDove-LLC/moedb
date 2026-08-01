@@ -387,10 +387,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if enabled not in {"0", "1", "false", "true", "no", "yes"}:
             raise PublishError("RADB_PUBLISH_ENABLED must be true or false")
         maintainer = _setting("RADB_MAINTAINER")
-        email = _setting("RADB_PUBLICATION_CONTACT")
         reason = _setting("RADB_DELETE_REASON")
-        if not MAINTAINER_RE.fullmatch(maintainer) or not EMAIL_RE.fullmatch(email):
-            raise PublishError("RADB publication variables are invalid")
+        if not MAINTAINER_RE.fullmatch(maintainer):
+            raise PublishError("RADB maintainer is invalid")
         if reason != reason.strip() or any(c in reason for c in "\r\n"):
             raise PublishError("RADB_DELETE_REASON must be one non-empty line")
         root = Path(args.root).resolve()
@@ -403,8 +402,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             for action, ref, _old, _new in changes:
                 print(f"planned: {action} {ref[0]} {' / '.join(ref[1])}")
             return 0
+        username = _setting("RADB_USERNAME")
+        if not EMAIL_RE.fullmatch(username):
+            raise PublishError("RADB username must be the publication email address")
         client = RadbClient(
-            _setting("RADB_USERNAME"),
+            username,
             _setting("RADB_ACCOUNT_PASSWORD"),
             _setting("RADB_IRR_PASSWORD"),
         )
@@ -412,7 +414,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             changes,
             client,
             maintainer=maintainer,
-            email=email,
+            email=username,
             date=publication_date,
             reason=reason,
         )

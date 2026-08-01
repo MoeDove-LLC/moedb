@@ -272,7 +272,6 @@ class GitChangeTests(unittest.TestCase):
         variables = {
             "RADB_PUBLISH_ENABLED": "false",
             "RADB_MAINTAINER": MAINTAINER,
-            "RADB_PUBLICATION_CONTACT": EMAIL,
             "RADB_DELETE_REASON": REASON,
         }
         output = io.StringIO()
@@ -287,6 +286,29 @@ class GitChangeTests(unittest.TestCase):
             self.assertEqual(publish.main(["--before", "a", "--after", "b"]), 0)
         client.assert_not_called()
         self.assertIn("planned: create role NOC-AP", output.getvalue())
+
+    def test_enabled_mode_uses_username_as_publication_contact(self):
+        item = change("create", None, ROLE)
+        variables = {
+            "RADB_PUBLISH_ENABLED": "true",
+            "RADB_MAINTAINER": MAINTAINER,
+            "RADB_DELETE_REASON": REASON,
+            "RADB_USERNAME": EMAIL,
+            "RADB_ACCOUNT_PASSWORD": "account-secret",
+            "RADB_IRR_PASSWORD": "maintainer-secret",
+        }
+        with (
+            patch.dict(os.environ, variables, clear=True),
+            patch.object(publish, "_exact_range", return_value=("a", "b")),
+            patch.object(publish, "build_changes", return_value=[item]),
+            patch.object(publish, "git_commit_date", return_value=DATE),
+            patch.object(publish, "RadbClient") as client_type,
+            patch.object(publish, "publish_changes", return_value=[]) as publish_changes,
+        ):
+            self.assertEqual(publish.main(["--before", "a", "--after", "b"]), 0)
+
+        client_type.assert_called_once_with(EMAIL, "account-secret", "maintainer-secret")
+        self.assertEqual(publish_changes.call_args.kwargs["email"], EMAIL)
 
     def test_exact_range_accepts_any_forward_main_update(self):
         before, after = "a" * 40, "b" * 40
