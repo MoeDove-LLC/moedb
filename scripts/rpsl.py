@@ -393,6 +393,22 @@ def git_changed_paths(root: str | Path, before: str, after: str) -> list[str]:
     return sorted({_safe_git_path(raw.decode("utf-8")) for raw in result.stdout.split(b"\0") if raw})
 
 
+def git_pr_changed_paths(root: str | Path, base: str, head: str) -> list[str]:
+    """Return only changes introduced by a PR branch, even when its base advances."""
+
+    result = _git(root, ["merge-base", base, head])
+    merge_bases = result.stdout.splitlines()
+    if result.returncode or len(merge_bases) != 1:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        message = "cannot determine the pull request merge base"
+        raise RPSLError(f"{message}: {detail}" if detail else message)
+    try:
+        merge_base = merge_bases[0].decode("ascii")
+    except UnicodeError:
+        raise RPSLError("Git returned an invalid pull request merge base") from None
+    return git_changed_paths(root, merge_base, head)
+
+
 def git_file_text(root: str | Path, revision: str, path: str) -> str | None:
     safe_path = _safe_git_path(path)
     result = _git(root, ["show", f"{revision}:{safe_path}"])

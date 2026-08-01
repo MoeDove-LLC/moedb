@@ -25,6 +25,7 @@ from scripts.rpsl import (
     git_file_text,
     git_first_contact_commit,
     git_last_change_date,
+    git_pr_changed_paths,
     parse_text,
     transform_for_radb,
     validate_object,
@@ -388,6 +389,23 @@ class PullRequestTests(GitRepositoryCase):
         head = self.rev()
         errors = self.check(self.base, head)
         self.assertTrue(any("separate pull requests" in error for error in errors))
+
+    def test_base_control_changes_are_not_attributed_to_a_stale_data_pr(self):
+        main_branch = self.git("branch", "--show-current")
+        self.git("checkout", "-q", "-b", "submission")
+        head = self.valid_submission()
+
+        self.git("checkout", "-q", main_branch)
+        self.write("README.md", "new base control file\n")
+        self.commit("advance base", "2020-01-03T12:00:00+00:00")
+        advanced_base = self.rev()
+
+        self.git("checkout", "-q", "submission")
+        self.assertEqual(
+            git_pr_changed_paths(self.root, advanced_base, head),
+            ["data/person/JD1-RIPE", "data/route/192.0.2.0_24__AS64496"],
+        )
+        self.assertEqual(self.check(advanced_base, head), [])
 
     def test_exactly_one_contact_handle(self):
         self.write("data/person/JD1-RIPE", person())

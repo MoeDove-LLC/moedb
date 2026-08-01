@@ -19,10 +19,10 @@ try:
         CONTACT_CLASSES,
         RPSLError,
         RPSLObject,
-        git_changed_paths,
         git_file_text,
         git_first_contact_commit,
         git_last_change_date,
+        git_pr_changed_paths,
         parse_text,
         validate_object,
         validate_repository,
@@ -32,10 +32,10 @@ except ImportError:  # Direct execution: python scripts/check.py
         CONTACT_CLASSES,
         RPSLError,
         RPSLObject,
-        git_changed_paths,
         git_file_text,
         git_first_contact_commit,
         git_last_change_date,
+        git_pr_changed_paths,
         parse_text,
         validate_object,
         validate_repository,
@@ -255,7 +255,7 @@ def check_pr(
     root_path = Path(root)
     errors = validate_repository(root_path)
     try:
-        changed_paths = git_changed_paths(root_path, before, after)
+        changed_paths = git_pr_changed_paths(root_path, before, after)
     except RPSLError as error:
         return _unique_errors([*errors, str(error)])
 
