@@ -243,10 +243,13 @@ class RepositoryValidationTests(unittest.TestCase):
         errors = validate_repository(self.root)
         self.assertTrue(any("must reference the same contact" in error for error in errors))
 
-    def test_missing_contact_reference_is_rejected(self):
+    def test_missing_contact_reference_is_reported_once_with_a_fix(self):
         self.write("data/route/192.0.2.0_24__AS64496", route())
         errors = validate_repository(self.root)
-        self.assertTrue(any("missing local contact 'JD1-RIPE'" in error for error in errors))
+        missing = [error for error in errors if "missing local contact 'JD1-RIPE'" in error]
+        self.assertEqual(len(missing), 1)
+        self.assertIn("admin-c and tech-c reference", missing[0])
+        self.assertIn("add 'data/person/JD1-RIPE' or 'data/role/JD1-RIPE'", missing[0])
 
     def test_duplicate_contact_handle_across_person_and_role(self):
         self.write("data/person/JD1-RIPE", person())
@@ -350,6 +353,33 @@ class PullRequestTests(GitRepositoryCase):
         self.write("data/route6/2001~db8~~_32__AS64496", route6())
         self.commit("IPv6 and set", "2020-01-02T12:00:00+00:00")
         self.assertEqual(self.check(self.base, self.rev()), [])
+
+    def test_invalid_txt_path_and_missing_contact_are_not_reported_twice(self):
+        text = as_set(handle="ZY1410-AP").replace(
+            "AS64496:AS-CUSTOMERS", "AS-FR"
+        )
+        self.write("data/as-set/AS-FR.txt", text)
+        self.commit("invalid external-contact submission", "2020-01-02T12:00:00+00:00")
+
+        errors = self.check(self.base, self.rev())
+
+        path_errors = [error for error in errors if "object must be stored" in error]
+        missing = [error for error in errors if "missing local contact 'ZY1410-AP'" in error]
+        self.assertEqual(path_errors, [
+            "data/as-set/AS-FR.txt: object must be stored at 'data/as-set/AS-FR'"
+        ])
+        self.assertEqual(len(missing), 1)
+        self.assertIn("admin-c and tech-c reference", missing[0])
+        self.assertFalse(any("no trusted ownership history" in error for error in errors))
+
+    def test_repository_and_changed_file_parse_errors_are_deduplicated(self):
+        self.write("data/person/BROKEN", person().replace("person:", "Person:", 1))
+        self.commit("malformed contact", "2020-01-02T12:00:00+00:00")
+
+        errors = self.check(self.base, self.rev())
+
+        lowercase = [error for error in errors if "attribute names must be lowercase" in error]
+        self.assertEqual(len(lowercase), 1)
 
     def test_data_and_control_changes_must_be_separate(self):
         head = self.valid_submission()
@@ -527,7 +557,7 @@ class PullRequestTests(GitRepositoryCase):
         (self.root / "data/person/JD1-RIPE").unlink()
         self.commit("delete referenced contact", "2020-01-03T12:00:00+00:00")
         errors = self.check(self.base, self.rev(), author=42, owner=42)
-        self.assertTrue(any("references missing local contact" in error for error in errors))
+        self.assertTrue(any("missing local contact 'JD1-RIPE'" in error for error in errors))
 
     def test_recreating_deleted_handle_keeps_original_owner(self):
         self.base = self.valid_submission()

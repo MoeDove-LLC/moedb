@@ -1,17 +1,49 @@
 name: Check RPSL
 
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
+    types: [opened, synchronize, reopened]
 
-permissions:
-  contents: read
-  pull-requests: read
+permissions: {}
+
+concurrency:
+  group: rpsl-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Checkout trusted reporter
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          path: trusted
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Mark head validation pending
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MOEDB_REPOSITORY: ${{ github.repository }}
+          MOEDB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MOEDB_RUN_ID: ${{ github.run_id }}
+        run: python trusted/scripts/pr_comment.py prepare
+
   check:
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      report: ${{ steps.validation.outputs.report }}
     env:
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
@@ -36,10 +68,59 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Check submission
+      - name: Check submission as untrusted data
+        id: validation
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          stop_token="$(python trusted/scripts/pr_comment.py command-token)"
+          printf '::stop-commands::%s\n' "$stop_token"
+          trap 'printf "::%s::\n" "$stop_token"' EXIT
+          set +e
           python trusted/scripts/check.py \
             --root "$GITHUB_WORKSPACE/submission" \
-            --event "$GITHUB_EVENT_PATH"
+            --event "$GITHUB_EVENT_PATH" \
+            2>&1 | tee "$RUNNER_TEMP/rpsl-check.log"
+          check_exit=${PIPESTATUS[0]}
+          set -e
+          printf '::%s::\n' "$stop_token"
+          trap - EXIT
+          python trusted/scripts/pr_comment.py capture \
+            --log "$RUNNER_TEMP/rpsl-check.log" \
+            --exit-code "$check_exit" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Preserve required-check result
+        if: always()
+        env:
+          CHECK_EXIT_CODE: ${{ steps.validation.outputs.exit_code }}
+        run: test "$CHECK_EXIT_CODE" = "0"
+
+  report:
+    if: always()
+    needs: [prepare, check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+    steps:
+      - name: Checkout trusted reporter
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          path: trusted
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Upsert PR comment and head status
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MOEDB_REPOSITORY: ${{ github.repository }}
+          MOEDB_PR_NUMBER: ${{ github.event.pull_request.number }}
+          MOEDB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MOEDB_RUN_ID: ${{ github.run_id }}
+          MOEDB_CHECK_JOB_RESULT: ${{ needs.check.result }}
+          MOEDB_CHECK_REPORT: ${{ needs.check.outputs.report }}
+        run: python trusted/scripts/pr_comment.py publish

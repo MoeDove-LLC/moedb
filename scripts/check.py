@@ -210,6 +210,12 @@ def _authorization_handles(obj: RPSLObject) -> set[str]:
     return {handle for name in ("admin-c", "tech-c") for handle in obj.values(name) if handle}
 
 
+def _unique_errors(errors: list[str]) -> list[str]:
+    """Keep the first occurrence so repository and changed-file checks do not repeat it."""
+
+    return list(dict.fromkeys(errors))
+
+
 def _contact_at_revision(
     root: Path, revision: str, handle: str
 ) -> tuple[str, RPSLObject] | None:
@@ -250,7 +256,7 @@ def check_pr(
     try:
         changed_paths = git_changed_paths(root_path, before, after)
     except RPSLError as error:
-        return [*errors, str(error)]
+        return _unique_errors([*errors, str(error)])
 
     data_paths = [
         path
@@ -261,14 +267,16 @@ def check_pr(
     if data_paths and control_paths:
         errors.append("data and control files must be submitted in separate pull requests")
     if not data_paths:
-        return errors
+        return _unique_errors(errors)
 
     authorization_handles: set[str] = set()
     submitted_contacts: set[str] = set()
     contact_classes: dict[str, set[str]] = {}
     for path in data_paths:
         if path.endswith(".rpsl"):
-            errors.append(f"{path}: object files must not use the .rpsl suffix")
+            suffix_error = f"{path}: object files must not use the .rpsl suffix"
+            if suffix_error not in errors:
+                errors.append(suffix_error)
         try:
             old_text = git_file_text(root_path, before, path)
             new_text = git_file_text(root_path, after, path)
@@ -291,8 +299,9 @@ def check_pr(
             if old_obj is None:
                 errors.append(f"{path}: changed data path contains no RPSL object")
             continue
-        object_errors = validate_object(new_obj, path)
-        errors.extend(object_errors)
+        for object_error in validate_object(new_obj, path):
+            if object_error not in errors:
+                errors.append(object_error)
         if old_text == new_text:
             continue
         if new_obj.object_class in CONTACT_CLASSES:
@@ -319,24 +328,28 @@ def check_pr(
         errors.append(
             "a data pull request must affect exactly one contact handle across its before and after objects"
         )
-        return errors
+        return _unique_errors(errors)
 
     handle = next(iter(authorization_handles))
     if not _positive_integer(pr_author_id):
         errors.append("automatic ownership requires the pull request author's GitHub numeric ID")
-        return errors
+        return _unique_errors(errors)
     try:
         introduction = git_first_contact_commit(root_path, before, handle)
     except RPSLError as error:
         errors.append(str(error))
-        return errors
+        return _unique_errors(errors)
 
     if introduction is None:
         if handle not in submitted_contacts:
-            errors.append(
-                f"contact '{handle}' has no trusted ownership history and is not introduced by this pull request"
-            )
-            return errors
+            missing_contact = f"missing local contact '{handle}'"
+            if not any(missing_contact in error for error in errors):
+                errors.append(
+                    f"contact '{handle}' has no trusted ownership history; add or modify "
+                    f"'data/person/{handle}' or 'data/role/{handle}' in this pull request "
+                    "to establish ownership"
+                )
+            return _unique_errors(errors)
         owner_id = pr_author_id
     else:
         try:
@@ -353,14 +366,14 @@ def check_pr(
                 )
         except RPSLError as error:
             errors.append(f"contact '{handle}': {error}")
-            return errors
+            return _unique_errors(errors)
         if not _positive_integer(owner_id):
             errors.append(f"contact '{handle}' resolved to an invalid GitHub owner ID")
-            return errors
+            return _unique_errors(errors)
 
     if owner_id != pr_author_id:
         errors.append(f"pull request author is not authorized for contact '{handle}'")
-        return errors
+        return _unique_errors(errors)
 
     if verify_rir:
         final_contact = None
@@ -374,7 +387,7 @@ def check_pr(
                 rir_error = verify_contact_at_rir(contact, opener)
                 if rir_error:
                     errors.append(f"{contact_path}: {rir_error}")
-    return errors
+    return _unique_errors(errors)
 
 
 def _pull_request_event(path: str | Path) -> dict[str, object]:

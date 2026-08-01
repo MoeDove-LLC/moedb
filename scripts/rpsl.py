@@ -329,7 +329,11 @@ def validate_repository(root: str | Path = ".") -> list[str]:
         try:
             obj = parse_file(path)
         except RPSLError as error:
-            errors.append(str(error))
+            message = str(error)
+            absolute_label = str(path)
+            if message == absolute_label or message.startswith(absolute_label + ":"):
+                message = relative + message[len(absolute_label):]
+            errors.append(message)
             continue
         objects.append(obj)
         errors.extend(validate_object(obj, relative))
@@ -351,10 +355,21 @@ def validate_repository(root: str | Path = ".") -> list[str]:
             admin, tech = obj.values("admin-c"), obj.values("tech-c")
             if admin and tech and admin != tech:
                 errors.append(f"{label}: admin-c and tech-c must reference the same contact")
+        references: dict[str, list[str]] = {}
         for name in ("admin-c", "tech-c"):
             for handle in obj.values(name):
-                if handle not in contacts:
-                    errors.append(f"{label}: {name} references missing local contact '{handle}'")
+                names = references.setdefault(handle, [])
+                if name not in names:
+                    names.append(name)
+        for handle, names in references.items():
+            if handle in contacts:
+                continue
+            attributes = " and ".join(names)
+            verb = "reference" if len(names) > 1 else "references"
+            errors.append(
+                f"{label}: {attributes} {verb} missing local contact '{handle}'; "
+                f"add 'data/person/{handle}' or 'data/role/{handle}' in this pull request"
+            )
     return errors
 
 
