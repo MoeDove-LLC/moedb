@@ -11,6 +11,7 @@ import re
 import ssl
 import subprocess
 import sys
+import time
 from typing import Callable, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -30,6 +31,7 @@ try:  # Supports both ``python scripts/publish.py`` and test imports.
         git_file_text,
         parse_text,
         transform_for_radb,
+        validate_object,
     )
 except ImportError:  # pragma: no cover - exercised by the workflow entry point
     from rpsl import (  # type: ignore[no-redef]
@@ -39,6 +41,7 @@ except ImportError:  # pragma: no cover - exercised by the workflow entry point
         git_file_text,
         parse_text,
         transform_for_radb,
+        validate_object,
     )
 
 
@@ -48,6 +51,8 @@ SERVER_ATTRIBUTES = frozenset({"created", "last-modified", "rpki-ov-state", "del
 PUBLICATION_ATTRIBUTES = frozenset({"source", "changed"})
 MAX_RESPONSE_BYTES = 1024 * 1024
 UNCERTAIN_WRITE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+VERIFY_ATTEMPTS = 5
+VERIFY_DELAY_SECONDS = 1.0
 MAINTAINER_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,79}$")
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
@@ -319,6 +324,21 @@ def build_changes(root: Path, before: str, after: str):
     return sorted(changes, key=order)
 
 
+def build_reconcile_change(root: Path, revision: str, path: str):
+    """Build one fail-closed create/idempotency check for a current data object."""
+
+    if not _data_path(path):
+        raise PublishError("reconcile path must be one canonical data object path")
+    text = git_file_text(root, revision, path)
+    if text is None:
+        raise PublishError("reconcile path does not exist at the checked-out revision")
+    obj = parse_text(text, path)
+    object_errors = validate_object(obj, path)
+    if object_errors:
+        raise PublishError(f"reconcile target is invalid: {object_errors[0]}")
+    return "create", _ref(obj), None, obj
+
+
 def _desired(obj, email: str, date: str, maintainer: str) -> str:
     rendered = transform_for_radb(obj, email, date, maintainer)
     parsed = parse_text(rendered)
@@ -338,10 +358,57 @@ def _remote(client, ref):
     text = client.fetch(ref)
     if text is None:
         return None
-    obj = parse_text(text)
+    try:
+        obj = parse_text(text)
+    except ValueError:
+        raise PublishError(
+            f"RADB returned invalid RPSL for {_ref_label(ref)}"
+        ) from None
     if obj.values("source") != ("RADB",):
-        raise PublishError("remote object source is not exactly RADB")
+        raise PublishError(
+            f"{_ref_label(ref)}: remote object source is not exactly RADB"
+        )
     return obj
+
+
+def _ref_label(ref: tuple[str, tuple[str, ...]]) -> str:
+    return f"{ref[0]} {' / '.join(ref[1])}"
+
+
+def _wait_for_state(
+    client,
+    ref: tuple[str, tuple[str, ...]],
+    desired_obj,
+    *,
+    attempts: int,
+    delay: float,
+) -> bool:
+    """Poll with GET only until RADB shows the requested final state."""
+
+    if attempts < 1 or delay < 0:
+        raise PublishError("invalid RADB verification retry settings")
+    last_error: PublishError | None = None
+    for attempt in range(attempts):
+        try:
+            remote = _remote(client, ref)
+        except PublishError as error:
+            last_error = error
+        else:
+            last_error = None
+            if desired_obj is None:
+                if remote is None:
+                    return True
+            elif remote is not None and _semantic(remote, core=False) == _semantic(
+                desired_obj, core=False
+            ):
+                return True
+        if attempt + 1 < attempts and delay:
+            time.sleep(delay * (2**attempt))
+    if last_error is not None:
+        raise PublishError(
+            f"read-back verification for {_ref_label(ref)} failed: {last_error}"
+        ) from None
+    return False
 
 
 def _delete_body(remote, email: str, reason: str) -> str:
@@ -351,9 +418,20 @@ def _delete_body(remote, email: str, reason: str) -> str:
     return f"{existing}\n{'delete:':<16}{email} {reason}\n"
 
 
-def publish_changes(changes, client, *, maintainer: str, email: str, date: str, reason: str):
+def publish_changes(
+    changes,
+    client,
+    *,
+    maintainer: str,
+    email: str,
+    date: str,
+    reason: str,
+    verification_attempts: int = VERIFY_ATTEMPTS,
+    verification_delay: float = VERIFY_DELAY_SECONDS,
+):
     outcomes = []
     for action, ref, old, new in changes:
+        label = _ref_label(ref)
         remote = _remote(client, ref)
         desired = _desired(new, email, date, maintainer) if new is not None else None
         desired_obj = parse_text(desired) if desired is not None else None
@@ -365,34 +443,73 @@ def publish_changes(changes, client, *, maintainer: str, email: str, date: str, 
                 if _semantic(remote, core=False) == _semantic(desired_obj, core=False):
                     outcomes.append((ref, "already-current"))
                     continue
-                raise PublishError("object already exists in RADB with different content")
-            client.create(ref, desired)
+                raise PublishError(
+                    f"{label}: object already exists in RADB with different content"
+                )
             outcome = "created"
         elif action == "update":
             if remote is None:
-                raise PublishError("object is missing from RADB; refusing implicit create")
+                raise PublishError(
+                    f"{label}: object is missing from RADB; refusing implicit create"
+                )
             if _semantic(remote, core=False) == _semantic(desired_obj, core=False):
                 outcomes.append((ref, "already-current"))
                 continue
             if _semantic(remote, core=True) != _semantic(expected_old_obj, core=True):
-                raise PublishError("RADB content drifted from Git; refusing overwrite")
-            client.update(ref, desired)
+                raise PublishError(
+                    f"{label}: RADB content drifted from Git; refusing overwrite"
+                )
             outcome = "updated"
         else:
             if remote is None:
                 outcomes.append((ref, "already-absent"))
                 continue
             if _semantic(remote, core=True) != _semantic(expected_old_obj, core=True):
-                raise PublishError("RADB content drifted from Git; refusing deletion")
-            client.delete(ref, _delete_body(remote, email, reason))
-            if client.fetch(ref) is not None:
-                raise PublishError("post-delete verification found the object present")
-            outcomes.append((ref, "deleted"))
-            continue
+                raise PublishError(
+                    f"{label}: RADB content drifted from Git; refusing deletion"
+                )
+            delete_body = _delete_body(remote, email, reason)
+            outcome = "deleted"
 
-        verified = _remote(client, ref)
-        if verified is None or _semantic(verified, core=False) != _semantic(desired_obj, core=False):
-            raise PublishError("post-write verification returned different content")
+        try:
+            if action == "create":
+                client.create(ref, desired)
+            elif action == "update":
+                client.update(ref, desired)
+            else:
+                client.delete(ref, delete_body)
+        except PublishError as write_error:
+            try:
+                confirmed = _wait_for_state(
+                    client,
+                    ref,
+                    None if action == "delete" else desired_obj,
+                    attempts=verification_attempts,
+                    delay=verification_delay,
+                )
+            except PublishError as verification_error:
+                raise PublishError(
+                    f"{_ref_label(ref)}: {write_error}; state reconciliation failed: "
+                    f"{verification_error}"
+                ) from None
+            if not confirmed:
+                raise PublishError(
+                    f"{_ref_label(ref)}: {write_error}; write outcome could not be confirmed"
+                ) from None
+            outcome += "-confirmed-after-error"
+        else:
+            if not _wait_for_state(
+                client,
+                ref,
+                None if action == "delete" else desired_obj,
+                attempts=verification_attempts,
+                delay=verification_delay,
+            ):
+                operation = "delete" if action == "delete" else "write"
+                raise PublishError(
+                    f"post-{operation} verification for {_ref_label(ref)} did not reach "
+                    f"the expected state after {verification_attempts} attempts"
+                )
         outcomes.append((ref, outcome))
     return outcomes
 
@@ -428,10 +545,16 @@ def _setting(name: str) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Publish an approved Git change to RADB")
-    parser.add_argument("--before", required=True)
-    parser.add_argument("--after", required=True)
+    parser.add_argument("--before")
+    parser.add_argument("--after")
+    parser.add_argument("--reconcile-path")
     parser.add_argument("--root", default=".")
     args = parser.parse_args(argv)
+    if args.reconcile_path:
+        if args.before or args.after:
+            parser.error("--reconcile-path cannot be combined with --before or --after")
+    elif not args.before or not args.after:
+        parser.error("--before and --after are required for normal publication")
     try:
         enabled = _setting("RADB_PUBLISH_ENABLED").casefold()
         if enabled not in {"0", "1", "false", "true", "no", "yes"}:
@@ -443,11 +566,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         if reason != reason.strip() or any(c in reason for c in "\r\n"):
             raise PublishError("RADB_DELETE_REASON must be one non-empty line")
         root = Path(args.root).resolve()
-        before, after = _exact_range(root, args.before, args.after)
-        changes = build_changes(root, before, after)
+        if args.reconcile_path:
+            after = _git(root, "rev-parse", "--verify", "HEAD^{commit}")
+            changes = [build_reconcile_change(root, after, args.reconcile_path)]
+            publication_date = changes[0][3].first("changed").rsplit(" ", 1)[-1]
+        else:
+            before, after = _exact_range(root, args.before, args.after)
+            changes = build_changes(root, before, after)
+            publication_date = git_commit_date(root, after)
         if not changes:
             raise PublishError("publication contains no semantic object changes")
-        publication_date = git_commit_date(root, after)
         if enabled in {"0", "false", "no"}:
             for action, ref, _old, _new in changes:
                 print(f"planned: {action} {ref[0]} {' / '.join(ref[1])}")

@@ -6,6 +6,12 @@ on:
     paths:
       - "data/**"
       - "!data/**/.gitkeep"
+  workflow_dispatch:
+    inputs:
+      reconcile_path:
+        description: Canonical data path of one approved object to reconcile
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -16,7 +22,7 @@ concurrency:
 
 jobs:
   publish:
-    if: github.repository == 'MoeDove-LLC/moedb'
+    if: github.repository == 'MoeDove-LLC/moedb' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: radb-production
@@ -26,7 +32,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'refs/heads/main' || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -38,13 +44,16 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
           BEFORE_SHA: ${{ github.event.before }}
           AFTER_SHA: ${{ github.sha }}
+          RECONCILE_PATH: ${{ inputs.reconcile_path }}
           RADB_MAINTAINER: ${{ secrets.RADB_MAINTAINER }}
           RADB_DELETE_REASON: ${{ secrets.RADB_DELETE_REASON }}
           RADB_PUBLISH_ENABLED: ${{ secrets.RADB_PUBLISH_ENABLED }}
           RADB_USERNAME: ${{ secrets.RADB_USERNAME }}
           RADB_ACCOUNT_PASSWORD: ${{ secrets.RADB_ACCOUNT_PASSWORD }}
           RADB_IRR_PASSWORD: ${{ secrets.RADB_IRR_PASSWORD }}
-        run: >-
-          python scripts/publish.py
-          --before "$BEFORE_SHA"
-          --after "$AFTER_SHA"
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            python scripts/publish.py --reconcile-path "$RECONCILE_PATH"
+          else
+            python scripts/publish.py --before "$BEFORE_SHA" --after "$AFTER_SHA"
+          fi

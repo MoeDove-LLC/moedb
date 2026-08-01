@@ -94,6 +94,24 @@ class PublicationTests(unittest.TestCase):
             "if: github.repository == 'MoeDove-LLC/moedb'",
             workflow,
         )
+        self.assertIn("github.ref == 'refs/heads/main'", workflow)
+
+    def test_publish_workflow_has_protected_single_object_reconciliation(self):
+        workflow = (
+            Path(__file__).parents[1] / ".github/workflows/publish.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("RECONCILE_PATH: ${{ inputs.reconcile_path }}", workflow)
+        self.assertIn(
+            'python scripts/publish.py --reconcile-path "$RECONCILE_PATH"',
+            workflow,
+        )
+        self.assertIn(
+            "ref: ${{ github.event_name == 'workflow_dispatch' && "
+            "'refs/heads/main' || github.sha }}",
+            workflow,
+        )
+        self.assertIn("environment: radb-production", workflow)
 
     def publish(self, changes, client):
         return publish.publish_changes(
@@ -103,6 +121,7 @@ class PublicationTests(unittest.TestCase):
             email=EMAIL,
             date=DATE,
             reason=REASON,
+            verification_delay=0,
         )
 
     def test_create_replaces_publication_fields_and_verifies(self):
@@ -138,6 +157,153 @@ class PublicationTests(unittest.TestCase):
         client = RadbNormalizingClient()
 
         self.assertEqual(self.publish([item], client)[0][1], "created")
+
+    def test_post_write_verification_polls_without_retrying_the_write(self):
+        item = change("create", None, ROLE)
+
+        class EventuallyConsistentClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.stale_reads = 0
+
+            def create(self, ref, body):
+                self.calls.append(("create", ref, body))
+                self.objects[ref] = body
+                self.stale_reads = 2
+                return 201
+
+            def fetch(self, ref):
+                self.calls.append(("fetch", ref))
+                if self.stale_reads:
+                    self.stale_reads -= 1
+                    return self.objects[ref].replace("Example NOC", "stale value")
+                return self.objects.get(ref)
+
+        client = EventuallyConsistentClient()
+
+        self.assertEqual(self.publish([item], client)[0][1], "created")
+        self.assertEqual(sum(call[0] == "create" for call in client.calls), 1)
+        self.assertGreaterEqual(sum(call[0] == "fetch" for call in client.calls), 4)
+
+    def test_post_write_verification_retries_a_transient_invalid_response(self):
+        item = change("create", None, ROLE)
+
+        class TransientInvalidClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.invalid_reads = 0
+
+            def create(self, ref, body):
+                self.calls.append(("create", ref, body))
+                self.objects[ref] = body
+                self.invalid_reads = 1
+                return 201
+
+            def fetch(self, ref):
+                self.calls.append(("fetch", ref))
+                if self.invalid_reads:
+                    self.invalid_reads -= 1
+                    return "<!DOCTYPE html>"
+                return self.objects.get(ref)
+
+        client = TransientInvalidClient()
+
+        self.assertEqual(self.publish([item], client)[0][1], "created")
+        self.assertEqual(sum(call[0] == "create" for call in client.calls), 1)
+
+    def test_applied_create_error_is_confirmed_without_retrying_write(self):
+        item = change("create", None, ROLE)
+
+        class AppliedThenErrorClient(FakeClient):
+            def create(self, ref, body):
+                self.calls.append(("create", ref, body))
+                self.objects[ref] = body
+                raise publish.PublishError("RADB POST failed after applying the object")
+
+        client = AppliedThenErrorClient()
+
+        self.assertEqual(
+            self.publish([item], client)[0][1], "created-confirmed-after-error"
+        )
+        self.assertEqual(sum(call[0] == "create" for call in client.calls), 1)
+
+    def test_applied_update_and_delete_errors_are_confirmed(self):
+        cases = (("update", OLD_ROUTE, NEW_ROUTE), ("delete", OLD_ROUTE, None))
+        for action, old, new in cases:
+            with self.subTest(action=action):
+                item = change(action, old, new)
+
+                class AppliedThenErrorClient(FakeClient):
+                    def update(self, ref, body):
+                        self.calls.append(("update", ref, body))
+                        self.objects[ref] = body
+                        raise publish.PublishError("RADB PUT response failed")
+
+                    def delete(self, ref, body):
+                        self.calls.append(("delete", ref, body))
+                        self.objects.pop(ref, None)
+                        raise publish.PublishError("RADB DELETE response failed")
+
+                client = AppliedThenErrorClient(
+                    {item[1]: transformed(OLD_ROUTE, "20231231")}
+                )
+
+                self.assertEqual(
+                    self.publish([item], client)[0][1],
+                    f"{action}d-confirmed-after-error",
+                )
+                self.assertEqual(sum(call[0] == action for call in client.calls), 1)
+
+    def test_unapplied_write_error_fails_closed(self):
+        item = change("create", None, ROLE)
+
+        class FailedClient(FakeClient):
+            def create(self, ref, body):
+                self.calls.append(("create", ref, body))
+                raise publish.PublishError("RADB POST failed")
+
+        client = FailedClient()
+        with self.assertRaisesRegex(
+            publish.PublishError, "write outcome could not be confirmed"
+        ):
+            self.publish([item], client)
+        self.assertEqual(sum(call[0] == "create" for call in client.calls), 1)
+
+    def test_write_error_with_unexpected_remote_content_fails_closed(self):
+        item = change("create", None, ROLE)
+
+        class WrongObjectClient(FakeClient):
+            def create(self, ref, body):
+                self.calls.append(("create", ref, body))
+                self.objects[ref] = body.replace("Example NOC", "unexpected value")
+                raise publish.PublishError("RADB POST response failed")
+
+        client = WrongObjectClient()
+        with self.assertRaisesRegex(
+            publish.PublishError, "write outcome could not be confirmed"
+        ):
+            self.publish([item], client)
+        self.assertEqual(sum(call[0] == "create" for call in client.calls), 1)
+
+    def test_batch_continues_after_a_reconciled_write_error(self):
+        second_role = ROLE.replace("NOC-AP", "NOC2-AP")
+        items = [change("create", None, text) for text in (ROLE, second_role)]
+
+        class AppliedThenErrorClient(FakeClient):
+            def create(self, ref, body):
+                self.calls.append(("create", ref, body))
+                self.objects[ref] = body
+                raise publish.PublishError("RADB POST response failed")
+
+        client = AppliedThenErrorClient()
+
+        outcomes = self.publish(items, client)
+
+        self.assertEqual(len(outcomes), 2)
+        self.assertTrue(
+            all(outcome == "created-confirmed-after-error" for _ref, outcome in outcomes)
+        )
+        self.assertEqual(sum(call[0] == "create" for call in client.calls), 2)
 
     def test_update_checks_base_then_is_idempotent(self):
         item = change("update", OLD_ROUTE, NEW_ROUTE)
@@ -243,6 +409,35 @@ class PublicationTests(unittest.TestCase):
         client = StaleClient({item[1]: transformed(OLD_ROUTE)})
         with self.assertRaisesRegex(publish.PublishError, "post-write"):
             self.publish([item], client)
+
+    def test_verification_exhaustion_uses_bounded_backoff_and_one_write(self):
+        item = change("create", None, ROLE)
+
+        class PermanentlyStaleClient(FakeClient):
+            def create(self, ref, body):
+                self.calls.append(("create", ref, body))
+                self.objects[ref] = body.replace("Example NOC", "stale value")
+                return 201
+
+        client = PermanentlyStaleClient()
+        with (
+            patch.object(publish.time, "sleep") as sleep,
+            self.assertRaisesRegex(publish.PublishError, "after 3 attempts"),
+        ):
+            publish.publish_changes(
+                [item],
+                client,
+                maintainer=MAINTAINER,
+                email=EMAIL,
+                date=DATE,
+                reason=REASON,
+                verification_attempts=3,
+                verification_delay=1,
+            )
+
+        self.assertEqual(sum(call[0] == "create" for call in client.calls), 1)
+        self.assertEqual(sum(call[0] == "fetch" for call in client.calls), 4)
+        self.assertEqual([args.args[0] for args in sleep.call_args_list], [1, 2])
 
     def test_legacy_maintainer_is_replaced_by_configured_maintainer(self):
         item = change("create", None, with_maintainer(ROLE, "LEGACY-MNT"))
@@ -400,6 +595,37 @@ class GitChangeTests(unittest.TestCase):
 
             self.assertEqual(publish.build_changes(root, before, after), [])
 
+    def test_reconcile_builds_one_idempotent_create_for_a_canonical_object(self):
+        with patch.object(publish, "git_file_text", return_value=ROLE):
+            item = publish.build_reconcile_change(
+                Path("."), "head", "data/role/NOC-AP"
+            )
+
+        self.assertEqual(item[:3], ("create", ("role", ("NOC-AP",)), None))
+        self.assertEqual(item[3].first("nic-hdl"), "NOC-AP")
+
+    def test_reconcile_rejects_noncanonical_or_missing_paths(self):
+        for path in ("role/NOC-AP", "README.md"):
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(publish.PublishError, "canonical data"):
+                    publish.build_reconcile_change(Path("."), "head", path)
+
+        with (
+            patch.object(publish, "git_file_text", return_value=ROLE),
+            self.assertRaisesRegex(publish.PublishError, "reconcile target is invalid"),
+        ):
+            publish.build_reconcile_change(
+                Path("."), "head", "data/role/NOC-AP.txt"
+            )
+
+        with (
+            patch.object(publish, "git_file_text", return_value=None),
+            self.assertRaisesRegex(publish.PublishError, "does not exist"),
+        ):
+            publish.build_reconcile_change(
+                Path("."), "head", "data/role/NOC-AP"
+            )
+
     def test_disabled_mode_plans_without_reading_secrets_or_network(self):
         item = change("create", None, ROLE)
         variables = {
@@ -417,6 +643,31 @@ class GitChangeTests(unittest.TestCase):
             redirect_stdout(output),
         ):
             self.assertEqual(publish.main(["--before", "a", "--after", "b"]), 0)
+        client.assert_not_called()
+        self.assertIn("planned: create role NOC-AP", output.getvalue())
+
+    def test_disabled_reconcile_mode_plans_one_current_object(self):
+        item = change("create", None, ROLE)
+        variables = {
+            "RADB_PUBLISH_ENABLED": "false",
+            "RADB_MAINTAINER": MAINTAINER,
+            "RADB_DELETE_REASON": REASON,
+        }
+        output = io.StringIO()
+        with (
+            patch.dict(os.environ, variables, clear=True),
+            patch.object(publish, "_git", return_value="head"),
+            patch.object(publish, "build_reconcile_change", return_value=item) as builder,
+            patch.object(publish, "RadbClient") as client,
+            redirect_stdout(output),
+        ):
+            self.assertEqual(
+                publish.main(["--reconcile-path", "data/role/NOC-AP"]), 0
+            )
+
+        builder.assert_called_once_with(
+            Path(".").resolve(), "head", "data/role/NOC-AP"
+        )
         client.assert_not_called()
         self.assertIn("planned: create role NOC-AP", output.getvalue())
 
@@ -442,6 +693,29 @@ class GitChangeTests(unittest.TestCase):
 
         client_type.assert_called_once_with(EMAIL, "account-secret", "maintainer-secret")
         self.assertEqual(publish_changes.call_args.kwargs["email"], EMAIL)
+
+    def test_enabled_reconcile_uses_the_repository_changed_date(self):
+        item = change("create", None, ROLE)
+        variables = {
+            "RADB_PUBLISH_ENABLED": "true",
+            "RADB_MAINTAINER": MAINTAINER,
+            "RADB_DELETE_REASON": REASON,
+            "RADB_USERNAME": EMAIL,
+            "RADB_ACCOUNT_PASSWORD": "account-secret",
+            "RADB_IRR_PASSWORD": "maintainer-secret",
+        }
+        with (
+            patch.dict(os.environ, variables, clear=True),
+            patch.object(publish, "_git", return_value="head"),
+            patch.object(publish, "build_reconcile_change", return_value=item),
+            patch.object(publish, "RadbClient"),
+            patch.object(publish, "publish_changes", return_value=[]) as publisher,
+        ):
+            self.assertEqual(
+                publish.main(["--reconcile-path", "data/role/NOC-AP"]), 0
+            )
+
+        self.assertEqual(publisher.call_args.kwargs["date"], "20240101")
 
     def test_exact_range_accepts_any_forward_main_update(self):
         before, after = "a" * 40, "b" * 40
