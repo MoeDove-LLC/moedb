@@ -1,0 +1,50 @@
+name: Publish RADB
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "data/**"
+      - "!data/**/.gitkeep"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: radb-production
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: radb-production
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Publish approved changes
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+          RADB_MAINTAINER: ${{ vars.RADB_MAINTAINER }}
+          RADB_PUBLICATION_CONTACT: ${{ vars.RADB_PUBLICATION_CONTACT }}
+          RADB_DELETE_REASON: ${{ vars.RADB_DELETE_REASON }}
+          RADB_PUBLISH_ENABLED: ${{ vars.RADB_PUBLISH_ENABLED }}
+          RADB_USERNAME: ${{ secrets.RADB_USERNAME }}
+          RADB_ACCOUNT_PASSWORD: ${{ secrets.RADB_ACCOUNT_PASSWORD }}
+          RADB_IRR_PASSWORD: ${{ secrets.RADB_IRR_PASSWORD }}
+        run: >-
+          python scripts/publish.py
+          --before "$BEFORE_SHA"
+          --after "$AFTER_SHA"

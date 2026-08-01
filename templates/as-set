@@ -1,0 +1,8 @@
+as-set:        AS64496:AS-CUSTOMERS
+descr:         Example submitted customer cone
+members:       AS64497, AS64498
+admin-c:       YOUR-HANDLE-RIR
+tech-c:        YOUR-HANDLE-RIR
+mnt-by:        YOUR-MNT
+changed:       contributor@example.net YYYYMMDD
+source:        MDNIC

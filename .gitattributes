@@ -1,2 +1,8 @@
-# Auto detect text files and perform LF normalization
+# Normalize public data and scripts to LF.
 * text=auto
+
+data/** text eol=lf
+templates/* text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
