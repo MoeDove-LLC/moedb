@@ -1,0 +1,7 @@
+as-set:        AS-POTAT0
+descr:         National University of Singapore
+members:       AS200078:AS-SET
+admin-c:       PA11147-RIPE
+tech-c:        PA11147-RIPE
+changed:       noc@potat0.cc 20260806
+source:        MDNIC
