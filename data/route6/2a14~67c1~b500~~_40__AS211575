@@ -1,0 +1,7 @@
+route6:        2a14:67c1:b500::/40
+descr:         IPv6 route for Rui Feng
+origin:        AS211575
+admin-c:       RF11145-RIPE
+tech-c:        RF11145-RIPE
+changed:       ruifeng@ruinet.work 20260812
+source:        MDNIC
