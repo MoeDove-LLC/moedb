@@ -233,14 +233,24 @@ def _identity(obj) -> tuple[str, ...]:
 
 def _ref(obj) -> tuple[str, tuple[str, ...]]:
     primary_key = obj.primary_key
-    if obj.object_class in {"route", "route6"}:
+    if obj.object_class == "role":
+        # Repository ownership and references identify contacts by nic-hdl,
+        # but RADB's REST endpoint identifies role objects by the role value.
+        keys = (obj.first("role") or "",)
+    elif obj.object_class in {"route", "route6"}:
         keys = (primary_key[0], primary_key[1].upper())
     else:
         keys = (primary_key[0].upper(),)
     return obj.object_class, keys
 
 
-def _semantic(obj, *, core: bool, repository: bool = False) -> tuple[tuple[str, str], ...]:
+def _semantic(
+    obj,
+    *,
+    core: bool,
+    repository: bool = False,
+    ignore_changed_date: bool = False,
+) -> tuple[tuple[str, str], ...]:
     ignored = set(SERVER_ATTRIBUTES)
     if core:
         ignored.update(PUBLICATION_ATTRIBUTES)
@@ -253,6 +263,11 @@ def _semantic(obj, *, core: bool, repository: bool = False) -> tuple[tuple[str, 
         normalized = " ".join(entry.value.split())
         if entry.name == "changed":
             normalized = normalized.partition(" #")[0]
+            contact, separator, date = normalized.rpartition(" ")
+            if ignore_changed_date and separator and re.fullmatch(r"[0-9]{8}", date):
+                # RADB preserves the publication contact but rewrites the date
+                # to the day it applies a delayed/reconciled write.
+                normalized = contact
         if (
             core
             and entry.name in {"descr", "remarks"}
@@ -398,8 +413,10 @@ def _wait_for_state(
             if desired_obj is None:
                 if remote is None:
                     return True
-            elif remote is not None and _semantic(remote, core=False) == _semantic(
-                desired_obj, core=False
+            elif remote is not None and _semantic(
+                remote, core=False, ignore_changed_date=True
+            ) == _semantic(
+                desired_obj, core=False, ignore_changed_date=True
             ):
                 return True
         if attempt + 1 < attempts and delay:
@@ -440,7 +457,11 @@ def publish_changes(
 
         if action == "create":
             if remote is not None:
-                if _semantic(remote, core=False) == _semantic(desired_obj, core=False):
+                if _semantic(
+                    remote, core=False, ignore_changed_date=True
+                ) == _semantic(
+                    desired_obj, core=False, ignore_changed_date=True
+                ):
                     outcomes.append((ref, "already-current"))
                     continue
                 raise PublishError(
@@ -452,7 +473,11 @@ def publish_changes(
                 raise PublishError(
                     f"{label}: object is missing from RADB; refusing implicit create"
                 )
-            if _semantic(remote, core=False) == _semantic(desired_obj, core=False):
+            if _semantic(
+                remote, core=False, ignore_changed_date=True
+            ) == _semantic(
+                desired_obj, core=False, ignore_changed_date=True
+            ):
                 outcomes.append((ref, "already-current"))
                 continue
             if _semantic(remote, core=True) != _semantic(expected_old_obj, core=True):

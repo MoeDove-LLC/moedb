@@ -67,4 +67,4 @@ changed:       contributor@example.net YYYYMMDD
 
 PR 检查会验证仓库格式、单一授权联系人、GitHub owner、引用关系、source、changed 日期及 RIR handle。管理员仍会人工核对资源关系后决定是否合并。
 
-合并后，发布任务只在内存中为新增/更新对象注入管理员配置的 `mnt-by`，将 source 改为 `RADB`，并将 changed 改为管理员配置的发布邮箱和合并 commit 的 UTC 日期。删除按 RADB 要求保留远端对象原文并追加 `delete`。Git 中保留投稿时的原值。
+合并后，发布任务只在内存中为新增/更新对象注入管理员配置的 `mnt-by`，将 source 改为 `RADB`，并将 changed 改为管理员配置的发布邮箱和合并 commit 的 UTC 日期；RADB 可能把其中日期规范化为实际落库日。删除按 RADB 要求保留远端对象原文并追加 `delete`。Git 中保留投稿时的原值。

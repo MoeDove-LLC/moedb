@@ -33,6 +33,15 @@ changed:        contributor@example.net 20240101
 source:         APNIC
 """
 
+AS_SET = """\
+as-set:         AS-EXAMPLE
+members:        AS64496
+admin-c:        NOC-AP
+tech-c:         NOC-AP
+changed:        contributor@example.net 20240101
+source:         MDNIC
+"""
+
 OLD_ROUTE = """\
 route:          192.0.2.0/24
 descr:          old description
@@ -140,7 +149,40 @@ class PublicationTests(unittest.TestCase):
         self.assertNotIn("contributor@example.net", sent)
         self.assertGreaterEqual([call[0] for call in client.calls].count("fetch"), 2)
 
-    def test_post_write_verification_accepts_radb_generated_metadata(self):
+    def test_role_verification_uses_radb_key_then_publishes_associated_as_set(self):
+        items = [
+            change("create", None, ROLE),
+            change("create", None, AS_SET),
+        ]
+
+        class RadbKeyingClient(FakeClient):
+            def create(self, ref, body):
+                self.calls.append(("create", ref, body))
+                obj = parse_text(body)
+                server_ref = (
+                    ("role", (obj.first("role"),))
+                    if obj.object_class == "role"
+                    else publish._ref(obj)
+                )
+                self.objects[server_ref] = body
+                return 201
+
+        client = RadbKeyingClient()
+        outcomes = self.publish(items, client)
+
+        self.assertEqual(
+            outcomes,
+            [
+                (("role", ("Example NOC",)), "created"),
+                (("as-set", ("AS-EXAMPLE",)), "created"),
+            ],
+        )
+        self.assertEqual(
+            [call[1] for call in client.calls if call[0] == "create"],
+            [("role", ("Example NOC",)), ("as-set", ("AS-EXAMPLE",))],
+        )
+
+    def test_post_write_verification_accepts_radb_changed_date_and_metadata(self):
         item = change("create", None, ROLE)
 
         class RadbNormalizingClient(FakeClient):
@@ -148,7 +190,7 @@ class PublicationTests(unittest.TestCase):
                 self.calls.append(("create", ref, body))
                 normalized = body.replace(
                     f"changed:       {EMAIL} {DATE}\n",
-                    f"changed:       {EMAIL} {DATE} # 1921 GMT\n",
+                    f"changed:       {EMAIL} 20260812 # 1921 GMT\n",
                 )
                 normalized += "last-modified:  2026-08-01T19:21:33Z\n"
                 self.objects[ref] = normalized
@@ -157,6 +199,23 @@ class PublicationTests(unittest.TestCase):
         client = RadbNormalizingClient()
 
         self.assertEqual(self.publish([item], client)[0][1], "created")
+
+    def test_reconcile_is_idempotent_after_radb_rewrites_changed_date(self):
+        item = change("create", None, AS_SET)
+        remote = transformed(AS_SET, "20260812")
+        client = FakeClient({item[1]: remote})
+
+        self.assertEqual(self.publish([item], client)[0][1], "already-current")
+        self.assertFalse(any(call[0] == "create" for call in client.calls))
+
+    def test_rewritten_date_does_not_hide_a_different_publication_contact(self):
+        item = change("create", None, AS_SET)
+        remote = transformed(AS_SET, "20260812").replace(EMAIL, "other@example.net")
+        client = FakeClient({item[1]: remote})
+
+        with self.assertRaisesRegex(publish.PublishError, "different content"):
+            self.publish([item], client)
+        self.assertFalse(any(call[0] == "create" for call in client.calls))
 
     def test_post_write_verification_polls_without_retrying_the_write(self):
         item = change("create", None, ROLE)
@@ -286,7 +345,9 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(sum(call[0] == "create" for call in client.calls), 1)
 
     def test_batch_continues_after_a_reconciled_write_error(self):
-        second_role = ROLE.replace("NOC-AP", "NOC2-AP")
+        second_role = ROLE.replace("Example NOC", "Example NOC 2").replace(
+            "NOC-AP", "NOC2-AP"
+        )
         items = [change("create", None, text) for text in (ROLE, second_role)]
 
         class AppliedThenErrorClient(FakeClient):
@@ -469,6 +530,7 @@ class RadbClientTests(unittest.TestCase):
     def test_object_paths_cover_non_route_and_route_classes(self):
         cases = {
             ("person", ("PETER-AP",)): "/person/PETER-AP",
+            ("role", ("Example NOC",)): "/role/Example%20NOC",
             ("as-set", ("AS64496:AS-CUSTOMERS",)): "/as-set/AS64496%3AAS-CUSTOMERS",
             ("route", ("192.0.2.0/24", "AS64496")): "/route/192.0.2.0/24/AS64496",
         }
@@ -540,7 +602,7 @@ class RadbClientTests(unittest.TestCase):
             raise HTTPError(request.full_url, 404, "missing", {}, None)
 
         client = publish.RadbClient("user", "account", "irr", transport=transport)
-        self.assertIsNone(client.fetch(("role", ("NOC-AP",))))
+        self.assertIsNone(client.fetch(("role", ("Example NOC",))))
         self.assertEqual(len(calls), 1)
 
     def test_redirect_handler_refuses_followup(self):
@@ -601,7 +663,7 @@ class GitChangeTests(unittest.TestCase):
                 Path("."), "head", "data/role/NOC-AP"
             )
 
-        self.assertEqual(item[:3], ("create", ("role", ("NOC-AP",)), None))
+        self.assertEqual(item[:3], ("create", ("role", ("Example NOC",)), None))
         self.assertEqual(item[3].first("nic-hdl"), "NOC-AP")
 
     def test_reconcile_rejects_noncanonical_or_missing_paths(self):
@@ -644,7 +706,7 @@ class GitChangeTests(unittest.TestCase):
         ):
             self.assertEqual(publish.main(["--before", "a", "--after", "b"]), 0)
         client.assert_not_called()
-        self.assertIn("planned: create role NOC-AP", output.getvalue())
+        self.assertIn("planned: create role Example NOC", output.getvalue())
 
     def test_disabled_reconcile_mode_plans_one_current_object(self):
         item = change("create", None, ROLE)
@@ -669,7 +731,7 @@ class GitChangeTests(unittest.TestCase):
             Path(".").resolve(), "head", "data/role/NOC-AP"
         )
         client.assert_not_called()
-        self.assertIn("planned: create role NOC-AP", output.getvalue())
+        self.assertIn("planned: create role Example NOC", output.getvalue())
 
     def test_enabled_mode_uses_username_as_publication_contact(self):
         item = change("create", None, ROLE)
@@ -723,11 +785,42 @@ class GitChangeTests(unittest.TestCase):
         with patch.object(publish, "_git", side_effect=outputs):
             self.assertEqual(publish._exact_range(Path("."), before, after), (before, after))
 
+    def test_new_role_precedes_its_associated_as_set(self):
+        role_path = "data/role/NOC-AP"
+        as_set_path = "data/as-set/AS-EXAMPLE"
+        texts = {
+            ("after", role_path): ROLE,
+            ("after", as_set_path): AS_SET,
+        }
+        with (
+            patch.object(
+                publish,
+                "git_changed_paths",
+                return_value=[as_set_path, role_path],
+            ),
+            patch.object(
+                publish,
+                "git_file_text",
+                side_effect=lambda _root, revision, path: texts.get((revision, path)),
+            ),
+        ):
+            changes = publish.build_changes(Path("."), "before", "after")
+
+        self.assertEqual(
+            [(action, ref) for action, ref, _old, _new in changes],
+            [
+                ("create", ("role", ("Example NOC",))),
+                ("create", ("as-set", ("AS-EXAMPLE",))),
+            ],
+        )
+
     def test_new_contact_and_route_update_precede_old_contact_delete(self):
         old_contact = "data/role/NOC-AP"
         new_contact = "data/role/NOC2-AP"
         route_path = "data/route/192.0.2.0_24__AS64496"
-        new_role = ROLE.replace("NOC-AP", "NOC2-AP")
+        new_role = ROLE.replace("Example NOC", "Example NOC 2").replace(
+            "NOC-AP", "NOC2-AP"
+        )
         new_route = NEW_ROUTE.replace("NOC-AP", "NOC2-AP")
         texts = {
             ("before", old_contact): ROLE,
