@@ -1,0 +1,7 @@
+as-set:        AS-SAKARIN
+descr:         Sakarin Network
+members:       AS219378, AS219378:AS-SAKARIN
+admin-c:       SA46976-RIPE
+tech-c:        SA46976-RIPE
+changed:       admin@owo.cab 20260912
+source:        MDNIC
