@@ -1,0 +1,7 @@
+route6:        2a14:67c2:500::/40
+descr:         Youngdo Technologies Limited
+origin:        AS135671
+admin-c:       YTLN1-RIPE
+tech-c:        YTLN1-RIPE
+changed:       noc@youngdo.net 20260816
+source:        MDNIC
